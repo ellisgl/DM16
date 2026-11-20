@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Module name="dm8_top" Lut="42" T_Register="7044(0)" T_Alu="1042(0)" T_Lut="18555(42)" T_Bsram="33(0)">
+ <SubModule name="u_seq" Register="176" Alu="18" Lut="678" Bsram="1" T_Register="176(176)" T_Alu="18(18)" T_Lut="678(678)" T_Bsram="1(1)"/>
+ <SubModule name="gen_nodes[0].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="895(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="242" T_Register="50(50)" T_Alu="16(16)" T_Lut="242(242)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="218" T_Register="50(50)" T_Alu="16(16)" T_Lut="218(218)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="215" T_Register="50(50)" T_Alu="16(16)" T_Lut="215(215)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="220" T_Register="50(50)" T_Alu="16(16)" T_Lut="220(220)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[0].u_router" Register="230" Lut="278" T_Register="230(230)" T_Lut="278(278)"/>
+ <SubModule name="gen_nodes[1].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="868(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="223" T_Register="50(50)" T_Alu="16(16)" T_Lut="223(223)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="217" T_Register="50(50)" T_Alu="16(16)" T_Lut="217(217)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="217" T_Register="50(50)" T_Alu="16(16)" T_Lut="217(217)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="211" T_Register="50(50)" T_Alu="16(16)" T_Lut="211(211)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[1].u_router" Register="230" Lut="279" T_Register="230(230)" T_Lut="279(279)"/>
+ <SubModule name="gen_nodes[2].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="869(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="217" T_Register="50(50)" T_Alu="16(16)" T_Lut="217(217)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="215" T_Register="50(50)" T_Alu="16(16)" T_Lut="215(215)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="223" T_Register="50(50)" T_Alu="16(16)" T_Lut="223(223)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="214" T_Register="50(50)" T_Alu="16(16)" T_Lut="214(214)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[2].u_router" Register="230" Lut="290" T_Register="230(230)" T_Lut="290(290)"/>
+ <SubModule name="gen_nodes[3].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="853(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="211" T_Register="50(50)" T_Alu="16(16)" T_Lut="211(211)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="214" T_Register="50(50)" T_Alu="16(16)" T_Lut="214(214)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="209" T_Register="50(50)" T_Alu="16(16)" T_Lut="209(209)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="219" T_Register="50(50)" T_Alu="16(16)" T_Lut="219(219)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[3].u_router" Register="230" Lut="277" T_Register="230(230)" T_Lut="277(277)"/>
+ <SubModule name="gen_nodes[4].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="849(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="207" T_Register="50(50)" T_Alu="16(16)" T_Lut="207(207)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="216" T_Register="50(50)" T_Alu="16(16)" T_Lut="216(216)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="214" T_Register="50(50)" T_Alu="16(16)" T_Lut="214(214)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="212" T_Register="50(50)" T_Alu="16(16)" T_Lut="212(212)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[4].u_router" Register="230" Lut="289" T_Register="230(230)" T_Lut="289(289)"/>
+ <SubModule name="gen_nodes[5].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="840(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="215" T_Register="50(50)" T_Alu="16(16)" T_Lut="215(215)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="215" T_Register="50(50)" T_Alu="16(16)" T_Lut="215(215)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="206" T_Register="50(50)" T_Alu="16(16)" T_Lut="206(206)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="204" T_Register="50(50)" T_Alu="16(16)" T_Lut="204(204)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[5].u_router" Register="230" Lut="277" T_Register="230(230)" T_Lut="277(277)"/>
+ <SubModule name="gen_nodes[6].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="836(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="207" T_Register="50(50)" T_Alu="16(16)" T_Lut="207(207)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="200" T_Register="50(50)" T_Alu="16(16)" T_Lut="200(200)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="210" T_Register="50(50)" T_Alu="16(16)" T_Lut="210(210)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="219" T_Register="50(50)" T_Alu="16(16)" T_Lut="219(219)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[6].u_router" Register="230" Lut="273" T_Register="230(230)" T_Lut="273(273)"/>
+ <SubModule name="gen_nodes[7].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="837(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="211" T_Register="50(50)" T_Alu="16(16)" T_Lut="211(211)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="211" T_Register="50(50)" T_Alu="16(16)" T_Lut="211(211)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="204" T_Register="50(50)" T_Alu="16(16)" T_Lut="204(204)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="211" T_Register="50(50)" T_Alu="16(16)" T_Lut="211(211)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[7].u_router" Register="230" Lut="284" T_Register="230(230)" T_Lut="284(284)"/>
+ <SubModule name="gen_nodes[8].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="826(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="202" T_Register="50(50)" T_Alu="16(16)" T_Lut="202(202)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="212" T_Register="50(50)" T_Alu="16(16)" T_Lut="212(212)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="208" T_Register="50(50)" T_Alu="16(16)" T_Lut="208(208)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="204" T_Register="50(50)" T_Alu="16(16)" T_Lut="204(204)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[8].u_router" Register="228" Lut="278" T_Register="228(228)" T_Lut="278(278)"/>
+ <SubModule name="gen_nodes[9].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="819(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="204" T_Register="50(50)" T_Alu="16(16)" T_Lut="204(204)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="205" T_Register="50(50)" T_Alu="16(16)" T_Lut="205(205)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="206" T_Register="50(50)" T_Alu="16(16)" T_Lut="206(206)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="204" T_Register="50(50)" T_Alu="16(16)" T_Lut="204(204)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[9].u_router" Register="228" Lut="270" T_Register="228(228)" T_Lut="270(270)"/>
+ <SubModule name="gen_nodes[10].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="818(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="202" T_Register="50(50)" T_Alu="16(16)" T_Lut="202(202)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="211" T_Register="50(50)" T_Alu="16(16)" T_Lut="211(211)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="203" T_Register="50(50)" T_Alu="16(16)" T_Lut="203(203)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="202" T_Register="50(50)" T_Alu="16(16)" T_Lut="202(202)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[10].u_router" Register="229" Lut="284" T_Register="229(229)" T_Lut="284(284)"/>
+ <SubModule name="gen_nodes[11].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="834(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="211" T_Register="50(50)" T_Alu="16(16)" T_Lut="211(211)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="206" T_Register="50(50)" T_Alu="16(16)" T_Lut="206(206)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="214" T_Register="50(50)" T_Alu="16(16)" T_Lut="214(214)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="203" T_Register="50(50)" T_Alu="16(16)" T_Lut="203(203)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[11].u_router" Register="229" Lut="270" T_Register="229(229)" T_Lut="270(270)"/>
+ <SubModule name="gen_nodes[12].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="830(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="207" T_Register="50(50)" T_Alu="16(16)" T_Lut="207(207)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="213" T_Register="50(50)" T_Alu="16(16)" T_Lut="213(213)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="202" T_Register="50(50)" T_Alu="16(16)" T_Lut="202(202)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="208" T_Register="50(50)" T_Alu="16(16)" T_Lut="208(208)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[12].u_router" Register="228" Lut="277" T_Register="228(228)" T_Lut="277(277)"/>
+ <SubModule name="gen_nodes[13].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="826(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="206" T_Register="50(50)" T_Alu="16(16)" T_Lut="206(206)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="209" T_Register="50(50)" T_Alu="16(16)" T_Lut="209(209)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="206" T_Register="50(50)" T_Alu="16(16)" T_Lut="206(206)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="205" T_Register="50(50)" T_Alu="16(16)" T_Lut="205(205)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[13].u_router" Register="228" Lut="279" T_Register="228(228)" T_Lut="279(279)"/>
+ <SubModule name="gen_nodes[14].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="797(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="199" T_Register="50(50)" T_Alu="16(16)" T_Lut="199(199)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="202" T_Register="50(50)" T_Alu="16(16)" T_Lut="202(202)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="193" T_Register="50(50)" T_Alu="16(16)" T_Lut="193(193)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="203" T_Register="50(50)" T_Alu="16(16)" T_Lut="203(203)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[14].u_router" Register="229" Lut="276" T_Register="229(229)" T_Lut="276(276)"/>
+ <SubModule name="gen_nodes[15].u_cluster" Bsram="2" T_Register="200(0)" T_Alu="64(0)" T_Lut="786(0)" T_Bsram="2(2)">
+  <SubModule name="gen_pe[0].u_pe" Register="50" Alu="16" Lut="197" T_Register="50(50)" T_Alu="16(16)" T_Lut="197(197)"/>
+  <SubModule name="gen_pe[1].u_pe" Register="50" Alu="16" Lut="200" T_Register="50(50)" T_Alu="16(16)" T_Lut="200(200)"/>
+  <SubModule name="gen_pe[2].u_pe" Register="50" Alu="16" Lut="190" T_Register="50(50)" T_Alu="16(16)" T_Lut="190(190)"/>
+  <SubModule name="gen_pe[3].u_pe" Register="50" Alu="16" Lut="199" T_Register="50(50)" T_Alu="16(16)" T_Lut="199(199)"/>
+ </SubModule>
+ <SubModule name="gen_nodes[15].u_router" Register="229" Lut="271" T_Register="229(229)" T_Lut="271(271)"/>
+</Module>

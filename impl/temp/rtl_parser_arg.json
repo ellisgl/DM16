@@ -1,0 +1,32 @@
+{
+    "Device": "GW2AR-18C",
+    "Files": [
+        {
+            "Path": "/home/ellis/Projects/FPGA/DM8/src/dm8_top.v",
+            "Type": "verilog"
+        },
+        {
+            "Path": "/home/ellis/Projects/FPGA/DM8/src/dm8_pe.v",
+            "Type": "verilog"
+        },
+        {
+            "Path": "/home/ellis/Projects/FPGA/DM8/src/dm8_cluster.v",
+            "Type": "verilog"
+        },
+        {
+            "Path": "/home/ellis/Projects/FPGA/DM8/src/dm8_uart_seq.v",
+            "Type": "verilog"
+        },
+        {
+            "Path": "/home/ellis/Projects/FPGA/DM8/src/hypercube_router_4d.v",
+            "Type": "verilog"
+        }
+    ],
+    "IncludePath": [
+    ],
+    "LoopLimit": 2000,
+    "ResultFile": "/home/ellis/Projects/FPGA/DM8/impl/temp/rtl_parser.result",
+    "Top": "dm8_top",
+    "VerilogStd": "sysv",
+    "VhdlStd": "vhdl_93"
+}

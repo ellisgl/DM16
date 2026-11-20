@@ -1,0 +1,16 @@
+<?xml version="1" encoding="UTF-8"?>
+<!DOCTYPE gowin-fpga-project>
+<Project>
+    <Template>FPGA</Template>
+    <Version>5</Version>
+    <Device name="GW2AR-18C" pn="GW2AR-LV18QN88C8/I7">gw2ar18c-000</Device>
+    <FileList>
+        <File path="src/dm8_cluster.v" type="file.verilog" enable="1"/>
+        <File path="src/dm8_pe.v" type="file.verilog" enable="1"/>
+        <File path="src/dm8_top.v" type="file.verilog" enable="1"/>
+        <File path="src/dm8_uart_seq.v" type="file.verilog" enable="1"/>
+        <File path="src/hypercube_router_4d.v" type="file.verilog" enable="1"/>
+        <File path="src/tang_nano_20k.cst" type="file.cst" enable="1"/>
+        <File path="src/dm8.sdc" type="file.sdc" enable="1"/>
+    </FileList>
+</Project>
