@@ -32,26 +32,24 @@ MEM_A = 0x020
 MEM_B = 0x022
 
 KERNEL = [
-    encode_instr(OP_SET_CTX, sub_op=0x0),                      # all PEs on
-    encode_instr(OP_LDM, imm10=MEM_A),
-    encode_instr(OP_ALU, sub_op=ALU_ADD, src_sel=0x1, imm10=1),
-    encode_instr(OP_STM, imm10=MEM_A),
-    encode_instr(OP_ALU, sub_op=0x8, src_sel=0x2),              # acc = PE_ID
-    encode_instr(OP_ALU, sub_op=ALU_AND, src_sel=0x1, imm10=1),
-    encode_instr(OP_SET_CTX, sub_op=0x3),                      # odd PEs only
-    encode_instr(OP_LDM, imm10=MEM_B),
-    encode_instr(OP_ALU, sub_op=ALU_ADD, src_sel=0x1, imm10=1),
-    encode_instr(OP_STM, imm10=MEM_B),
+    encode_instr(OP_SET_CTX, sub_op=0x0),                           # all PEs on
+    encode_instr(OP_LDM,     imm10=MEM_A),
+    encode_instr(OP_ALU,     sub_op=ALU_ADD, src_sel=0x1, imm10=1),
+    encode_instr(OP_STM,     imm10=MEM_A),
+    encode_instr(OP_ALU,     sub_op=0x8, src_sel=0x2),              # acc = PE_ID
+    encode_instr(OP_ALU,     sub_op=ALU_AND, src_sel=0x1, imm10=1),
+    encode_instr(OP_SET_CTX, sub_op=0x3),                           # odd PEs only
+    encode_instr(OP_LDM,     imm10=MEM_B),
+    encode_instr(OP_ALU,     sub_op=ALU_ADD, src_sel=0x1, imm10=1),
+    encode_instr(OP_STM,     imm10=MEM_B),
     encode_instr(OP_SET_CTX, sub_op=0x0),
 ]
-
 
 def rerun(ser, length):
     ser.write(b"\x04")                              # reset PC
     ser.write(bytes([0x02, length >> 8, length & 0xFF]))
     ser.flush()
     time.sleep(0.002)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -63,9 +61,9 @@ def main():
 
     with open_dm16(args.port) as ser:
         inject_instr(ser, encode_instr(OP_SET_CTX, sub_op=0x0))
-        inject_instr(ser, encode_instr(OP_LDI, imm10=0))
-        inject_instr(ser, encode_instr(OP_STM, imm10=MEM_A))
-        inject_instr(ser, encode_instr(OP_STM, imm10=MEM_B))
+        inject_instr(ser, encode_instr(OP_LDI,     imm10=0))
+        inject_instr(ser, encode_instr(OP_STM,     imm10=MEM_A))
+        inject_instr(ser, encode_instr(OP_STM,     imm10=MEM_B))
 
         if args.mode == "once":
             upload_and_run(ser, KERNEL)
