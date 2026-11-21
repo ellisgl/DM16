@@ -21,6 +21,14 @@
 // 6 MAR   mar = src_sel==0 ? acc[9:0] : imm10
 // 7 ALU   acc = acc OP opB: 0 ADD 1 ADC 2 SUB 3 AND 4 OR 5 XOR 6 SHL 7 SHR
 //                           8 MOV 9 ASR A MUL (low 16 bits)
+//                           B MULH (high 16 bits, signed; X = unsigned)
+//                           C SHLN  D SHRN  E ASRN  F ROL (X = ROR)
+//         X is flag_ctl[2]. The barrel shifts move acc by n = opB[3:0];
+//         C = the last bit shifted out (0 when n = 0; the bit that wrapped
+//         round for ROL/ROR). With X set, SHLN/SHRN are funnel shifts that
+//         fill from b: SHLN acc = ({acc,b} << n)[31:16],
+//                      SHRN acc = ({b,acc} >> n)[15:0].
+//         MULH: C = 0, Z/N from the high half.
 // 8 SWP   acc <-> b
 // 9 CTX   context control (see cond_eval)
 // A SEND  send b; dest = src_sel 0: imm[5:0]  1: acc[5:0]  2: PE_ID ^ imm[5:0]
@@ -160,7 +168,40 @@ module dm16_pe #(
     // ------------------------------------------------------------------
     // Integer ALU
     // ------------------------------------------------------------------
-    wire [31:0] mul_full = acc * op_b;
+    wire        alu_x    = flag_ctl[2];
+
+    // 17 x 17 signed multiply covers both signed and unsigned 16-bit
+    // operands (fits one 18 x 18 DSP); the low half is the same either way.
+    wire signed [16:0] mul_a    = {~alu_x & acc[15],  acc};
+    wire signed [16:0] mul_b    = {~alu_x & op_b[15], op_b};
+    wire signed [33:0] mul_full = mul_a * mul_b;
+
+    // Barrel shifter: one 33-bit right shift by k = 0..16 of {hi, lo, 0}
+    // serves every shift and rotate.
+    //   right by n:  hi = fill, lo = acc,  k = n       result = sh[16:1], C = sh[0]
+    //   left by n:   hi = acc,  lo = fill, k = 16 - n  result = sh[16:1], C = sh[17]
+    wire [3:0]  sh_n    = op_b[3:0];
+    wire        sh_left = (sub_op == 4'hC) || ((sub_op == 4'hF) && !alu_x);
+    reg  [15:0] sh_hi, sh_lo;
+    always @(*) begin
+        case (sub_op)
+            4'hC:    begin sh_hi = acc;                        sh_lo = alu_x ? b_reg : 16'd0; end // SHLN
+            4'hD:    begin sh_hi = alu_x ? b_reg : 16'd0;      sh_lo = acc;                   end // SHRN
+            4'hE:    begin sh_hi = {16{acc[15]}};              sh_lo = acc;                   end // ASRN
+            default: begin sh_hi = acc;                        sh_lo = acc;                   end // ROL/ROR
+        endcase
+    end
+    wire [4:0]  sh_k   = sh_left ? (5'd16 - {1'b0, sh_n}) : {1'b0, sh_n};
+    wire [32:0] sh_out = {sh_hi, sh_lo, 1'b0} >> sh_k;
+    wire [15:0] sh_res = sh_out[16:1];
+    reg         sh_c;
+    always @(*) begin
+        if (sh_n == 4'd0)       sh_c = 1'b0;
+        else if (sub_op == 4'hF) sh_c = alu_x ? sh_res[15] : sh_res[0];
+        else if (sh_left)        sh_c = sh_out[17];
+        else                     sh_c = sh_out[0];
+    end
+
     reg  [16:0] alu_res;
     always @(*) begin
         alu_res = {1'b0, acc};
@@ -176,6 +217,9 @@ module dm16_pe #(
             4'h8: alu_res = {1'b0, op_b};                                  // MOV
             4'h9: alu_res = {acc[0], acc[15], acc[15:1]};                  // ASR
             4'hA: alu_res = {1'b0, mul_full[15:0]};                        // MUL
+            4'hB: alu_res = {1'b0, mul_full[31:16]};                       // MULH
+            4'hC, 4'hD, 4'hE, 4'hF:
+                  alu_res = {sh_c, sh_res};                                // SHLN/SHRN/ASRN/ROL
             default: alu_res = {1'b0, acc};
         endcase
     end

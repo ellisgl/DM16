@@ -60,6 +60,12 @@ LDI_FULL, LDI_HI, LDI_LO = 0, 1, 2
 # ALU sub-ops: acc = acc OP operand
 ALU_ADD, ALU_ADC, ALU_SUB, ALU_AND, ALU_OR, ALU_XOR = 0, 1, 2, 3, 4, 5
 ALU_SHL, ALU_SHR, ALU_MOV, ALU_ASR, ALU_MUL = 6, 7, 8, 9, 10
+ALU_MULH = 11   # high 16 bits of acc * opB, signed (x=True: unsigned)
+ALU_SHLN = 12   # acc <<= opB[3:0]          (x=True: funnel, acc = ({acc,b} << n)[31:16])
+ALU_SHRN = 13   # acc >>= opB[3:0], logical (x=True: funnel, acc = ({b,acc} >> n)[15:0])
+ALU_ASRN = 14   # acc >>= opB[3:0], arithmetic
+ALU_ROL  = 15   # rotate left by opB[3:0]   (x=True: rotate right)
+ALU_X    = 0x4  # flag_ctl bit that selects the variant above
 
 # Operand B (src_sel) for ALU / FPU
 SRC_B, SRC_IMM, SRC_ID, SRC_MEM = 0, 1, 2, 3
@@ -99,9 +105,33 @@ def encode_instr(opcode, sub_op=0, src_sel=0, flag_ctl=0, imm10=0):
     )
 
 
-def alu(sub_op, src=SRC_B, imm=0, mem=0):
-    """ALU op. For src=SRC_MEM pass the address as imm (or mem flags)."""
-    return encode_instr(OP_ALU, sub_op=sub_op, src_sel=src, flag_ctl=mem, imm10=imm)
+def alu(sub_op, src=SRC_B, imm=0, mem=0, x=False):
+    """ALU op. For src=SRC_MEM pass the address as imm (or mem flags).
+    x=True selects the variant: MULH unsigned, SHLN/SHRN funnel, ROL -> ROR."""
+    return encode_instr(OP_ALU, sub_op=sub_op, src_sel=src,
+                        flag_ctl=mem | (ALU_X if x else 0), imm10=imm)
+
+
+def alu_ref(sub_op, acc, opb, b=0, x=False):
+    """Reference model of the barrel-shift and MULH ops: returns (acc, C)."""
+    acc, opb, b = acc & 0xFFFF, opb & 0xFFFF, b & 0xFFFF
+    n = opb & 0xF
+    if sub_op == ALU_MULH:
+        if x:
+            return (acc * opb) >> 16, 0
+        return ((to_signed(acc) * to_signed(opb)) >> 16) & 0xFFFF, 0
+    if sub_op == ALU_SHLN:
+        w = (acc << 16) | (b if x else 0)
+        return ((w << n) >> 16) & 0xFFFF, (acc >> (16 - n)) & 1 if n else 0
+    if sub_op in (ALU_SHRN, ALU_ASRN):
+        hi = (0xFFFF if acc & 0x8000 else 0) if sub_op == ALU_ASRN else (b if x else 0)
+        w = (hi << 16) | acc
+        return (w >> n) & 0xFFFF, (acc >> (n - 1)) & 1 if n else 0
+    if sub_op == ALU_ROL:
+        r = ((acc >> n) | (acc << (16 - n))) & 0xFFFF if x else \
+            ((acc << n) | (acc >> (16 - n))) & 0xFFFF
+        return r, ((r >> 15) if x else r) & 1 if n else 0
+    raise ValueError(f"no reference for ALU sub-op {sub_op}")
 
 
 def fpu(sub_op, src=SRC_B, imm=0, mem=0):
