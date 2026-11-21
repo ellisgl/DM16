@@ -8,7 +8,9 @@ module dm16_core #(
     parameter integer DIMS   = 2,          // hypercube dimensions (clusters = 2^DIMS)
     parameter integer LANES  = 2,          // PEs per cluster (2 or 4)
     parameter integer COLS   = 4,          // NEWS torus width
-    parameter integer CLK_HZ = 54_000_000  // for the UART baud divider
+    parameter integer CLK_HZ = 54_000_000, // for the UART baud divider
+    parameter integer W      = 16,         // PE data width: 16, 32, 64, ... (a power of two)
+    parameter integer GOWIN_SP = 1          // Gowin BSRAM primitives (0: inferred RAM)
 )(
     input  wire       clk,
     input  wire       rst_n,
@@ -24,9 +26,8 @@ module dm16_core #(
     localparam integer NODES     = 1 << DIMS;
     localparam integer NUM_PE    = NODES * LANES;
     localparam integer ROWS      = NUM_PE / COLS;
-    localparam integer W         = 16;
     localparam integer LANE_BITS = (LANES <= 2) ? 1 : 2;
-    localparam integer PKT_W     = 24;
+    localparam integer PKT_W     = W + 8;   // {valid, 0, dest[5:0], data}
     localparam integer LINK_W    = 4;
 
     wire [23:0]         current_instr;
@@ -39,7 +40,8 @@ module dm16_core #(
     // 1. UART host loader & global SIMD sequencer
     dm16_uart_seq #(
         .CLK_HZ        (CLK_HZ),
-        .NUM_PE        (NUM_PE)
+        .NUM_PE        (NUM_PE),
+        .W             (W)
     ) u_seq (
         .clk           (clk),
         .rst_n         (rst_n),
@@ -103,8 +105,10 @@ module dm16_core #(
             wire             rt_in_valid, rt_in_ready, rt_out_valid, rt_out_ready;
 
             dm16_cluster #(
-                .LANES   (LANES),
-                .BASE_ID (n * LANES)
+                .LANES    (LANES),
+                .BASE_ID  (n * LANES),
+                .W        (W),
+                .GOWIN_SP (GOWIN_SP)
             ) u_cluster (
                 .clk          (clk),
                 .rst_n        (rst_n),
@@ -130,7 +134,7 @@ module dm16_core #(
                 .MY_NODE  (n),
                 .PKT_W    (PKT_W),
                 .LINK_W   (LINK_W),
-                .NODE_LSB (16 + LANE_BITS)     // dest = {cluster, lane}
+                .NODE_LSB (W + LANE_BITS)      // dest = {cluster, lane}
             ) u_router (
                 .clk             (clk),
                 .rst_n           (rst_n),

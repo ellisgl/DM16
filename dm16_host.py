@@ -34,6 +34,9 @@ NUM_PE  = (1 << DIMS) * LANES     # PEs
 ROWS    = NUM_PE // COLS          # NEWS torus height
 PE_DIMS = DIMS + (LANES - 1).bit_length()   # bits in a PE_ID
 MEM_WORDS = 1024
+WORD_BITS = 16                    # PE width W; must match dm16_top.v (the scripts assume 16)
+WORD_BYTES = WORD_BITS // 8
+WORD_MASK = (1 << WORD_BITS) - 1
 
 # ==============================================================================
 # Instruction set (24-bit: opcode[23:20] sub_op[19:16] src_sel[15:14]
@@ -383,13 +386,19 @@ def inject_instr(ser, instr):
     ser.write(b"\x06" + instr.to_bytes(3, "big"))
 
 
+def _words(data):
+    """Little-endian WORD_BYTES-byte words -> list of ints."""
+    return [int.from_bytes(data[i:i + WORD_BYTES], "little")
+            for i in range(0, len(data), WORD_BYTES)]
+
+
 def read_acc_grid(ser):
-    """Return every PE's 16-bit ACC (list of NUM_PE ints)."""
+    """Return every PE's ACC (list of NUM_PE ints)."""
     ser.write(b"\x07")
-    data = ser.read(2 * NUM_PE)
-    if len(data) != 2 * NUM_PE:
-        raise RuntimeError(f"Expected {2 * NUM_PE} ACC bytes, got {len(data)}")
-    return list(struct.unpack(f"<{NUM_PE}H", data))
+    data = ser.read(WORD_BYTES * NUM_PE)
+    if len(data) != WORD_BYTES * NUM_PE:
+        raise RuntimeError(f"Expected {WORD_BYTES * NUM_PE} ACC bytes, got {len(data)}")
+    return _words(data)
 
 
 def read_ctx_mask(ser):
@@ -405,7 +414,7 @@ def read_mem_grid(ser, addr):
     return read_acc_grid(ser)
 
 
-BULK_MAX_WORDS = 64   # per request: 8 KB, which the USB bridge buffers safely
+BULK_MAX_WORDS = 8192 // (WORD_BYTES * NUM_PE)   # 8 KB per request: the USB bridge buffers that safely
 
 
 def read_mem_block(ser, addr, count):
@@ -427,7 +436,7 @@ def read_mem_block(ser, addr, count):
 
 def _read_mem_block(ser, addr, count):
     ser.write(struct.pack(">BHH", 0x0A, addr, count))
-    nbytes = count * 2 * NUM_PE
+    nbytes = count * WORD_BYTES * NUM_PE
     old_timeout = ser.timeout
     ser.timeout = nbytes * 10 * 1.5 / ser.baudrate + 1
     try:
@@ -436,8 +445,8 @@ def _read_mem_block(ser, addr, count):
         ser.timeout = old_timeout
     if len(data) != nbytes:
         raise RuntimeError(f"bulk read: expected {nbytes} bytes, got {len(data)}")
-    words = struct.unpack(f"<{count * NUM_PE}H", data)
-    return [list(words[k * NUM_PE:(k + 1) * NUM_PE]) for k in range(count)]
+    words = _words(data)
+    return [words[k * NUM_PE:(k + 1) * NUM_PE] for k in range(count)]
 
 
 def read_status(ser):

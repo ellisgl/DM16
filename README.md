@@ -52,9 +52,19 @@ USB serial port that carries about 80 KB/s back to the PC, so it couldn't even
 get DOOM's frames out fast enough: a 320 × 200 frame is 64 KB, and DOOM wants
 35 of them a second, over 2 MB/s.
 
-What it *could* do in principle is the part of a 3-D renderer that is
-genuinely parallel: in a Wolfenstein-style ray caster, each PE could trace the
-ray for one screen column, 64 columns at once. Nobody has written that yet.
+What it *can* do is the part of a 3-D renderer that is genuinely parallel. In
+a Wolfenstein-style ray caster each screen column needs its own ray traced
+through the map, and `dm16_raycast.py` gives each PE one column: 64 rays at
+once, marching through a 16 × 16 map in every PE's memory and looping with
+`BANY` until every ray has hit a wall. It runs at about 40 frames a second,
+and you can walk around in it with the keyboard.
+
+![A ray-cast maze rendered by DM16, one screen column per PE](docs/raycast.gif)
+
+*`dm16_raycast.py --demo`: every column of every frame is computed on the
+board (about 20 ms per frame) and checked against a Python model; the PC only
+draws the result. A real DOOM is still out of reach, but this is the core
+idea of Wolfenstein 3D, running SIMD.*
 
 ### What it is good at
 
@@ -399,6 +409,7 @@ reliable limit).
 | `dm16_prefix_sum.py` | parallel prefix sum across the hypercube |
 | `dm16_stress.py` | repeated runs to catch rare glitches |
 | `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus |
+| `dm16_raycast.py` | Wolfenstein-style ray caster, one ray per PE: W/S or arrows to move, A/D to turn; `--demo` for an autopilot tour, `--ascii` for text shading, `--check` to compare every column with a Python model |
 | `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--zoom` (and `--loop`) to animate a zoom into a miniature copy of the set, `--check` to compare every pixel with a Python model |
 
 ## Source files
@@ -415,6 +426,15 @@ reliable limit).
 | `src/dm16_pll.v`, `src/pll_init.v` | PLL and its start-up |
 | `src/dm16.cst`, `src/dm16.sdc` | pin and timing constraints |
 | `dm16_host.py` | host library: encoding, assembler, UART helpers |
+| `dm16_model.py` | reference model of one PE at any width, used to check the RTL in simulation |
+
+## Scaling it up
+
+The PE width (`W`), the hypercube size (`DIMS`), PEs per cluster (`LANES`)
+and the torus width (`COLS`) are parameters. [docs/SCALING.md](docs/SCALING.md)
+covers what each costs (with measured per-PE sizes at 16 to 128 bits), what
+fits on which FPGA, what must change beyond 64 PEs, and how several boards
+could be joined into one machine.
 
 ## Resource use
 
@@ -422,9 +442,9 @@ On the GW5AST-138:
 
 | Resource | Used |
 |---|---|
-| Logic (LUTs + ALUs) | 99,503 / 138,240 (72%) |
-| Logic slices (CLS) | 59,430 / 69,120 (86%) |
-| Flip-flops | 31,546 / 139,095 (23%) |
+| Logic (LUTs + ALUs) | 97,430 / 138,240 (71%) |
+| Logic slices (CLS) | 59,012 / 69,120 (86%) |
+| Flip-flops | 31,554 / 139,095 (23%) |
 | Block RAM | 70 / 340 (21%): 64 PE memories + program memory |
 | DSP | 96 / 298 (33%) |
-| Fmax | 63.5 MHz, run at 50 MHz |
+| Fmax | 64.7 MHz, run at 50 MHz |

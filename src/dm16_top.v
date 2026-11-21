@@ -28,7 +28,8 @@ module dm16_top (
         .DIMS   (4),
         .LANES  (4),
         .COLS   (8),
-        .CLK_HZ (CLK_HZ)
+        .CLK_HZ (CLK_HZ),
+        .W      (16)          // PE width; keep in sync with WORD_BITS in dm16_host.py
     ) u_core (
         .clk            (clk),
         .rst_n          (key_reset_n & pll_lock),

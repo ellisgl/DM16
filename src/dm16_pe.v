@@ -1,11 +1,12 @@
 `timescale 1ns/1ns
-// DM16 processing element - 16-bit datapath with a built-in bfloat16 FPU.
+// DM16 processing element - W-bit datapath (W = 16, 32, 64, ...: a multiple
+// of 16) with W/16 bfloat16 FPU lanes. DM16 on the Tang Console uses W = 16.
 //
-// Registers: acc, b (16 bits; each holds an int16 or a bf16), mar (10 bits),
+// Registers: acc, b (W bits; at W = 16 each holds an int16 or a bf16), mar (10 bits),
 //            flags C/Z/N, 4-deep context stack, and (with HAS_RF) r1..r7.
 //            r0 is b. Without HAS_RF every r[n] is b.
 //            n = imm10[2:0] wherever a register is named.
-// Memory:    1024 x 16-bit words (2 KB), word addressed.
+// Memory:    1024 x W-bit words, word addressed.
 //
 // Instruction (24 bits): opcode[23:20] sub_op[19:16] src_sel[15:14]
 //                        flag_ctl[13:10] imm10[9:0]
@@ -19,18 +20,19 @@
 //
 // 0 NOP
 // 1 LDI   sub 0: acc = sext(imm10)   1: acc[15:8] = imm8   2: acc[7:0] = imm8
+//         (other bits unchanged; wider constants: SHLN 8 then OR imm8)
 // 2 LDM   acc = mem[addr]            3 STM  mem[addr] = acc
 // 4 LDX   acc = mem[mar]             5 STX  mem[mar]  = acc
 // 6 MAR   mar = src_sel==0 ? acc[9:0] : imm10
 // 7 ALU   acc = acc OP opB: 0 ADD 1 ADC 2 SUB 3 AND 4 OR 5 XOR 6 SHL 7 SHR
-//                           8 MOV 9 ASR A MUL (low 16 bits)
-//                           B MULH (high 16 bits, signed; X = unsigned)
+//                           8 MOV 9 ASR A MUL (low W bits)
+//                           B MULH (high W bits, signed; X = unsigned)
 //                           C SHLN  D SHRN  E ASRN  F ROL (X = ROR)
-//         X is flag_ctl[2]. The barrel shifts move acc by n = opB[3:0];
+//         X is flag_ctl[2]. The barrel shifts move acc by n = opB mod W;
 //         C = the last bit shifted out (0 when n = 0; the bit that wrapped
 //         round for ROL/ROR). With X set, SHLN/SHRN are funnel shifts that
-//         fill from b: SHLN acc = ({acc,b} << n)[31:16],
-//                      SHRN acc = ({b,acc} >> n)[15:0].
+//         fill from b: SHLN acc = ({acc,b} << n)[2W-1:W],
+//                      SHRN acc = ({b,acc} >> n)[W-1:0].
 //         MULH: C = 0, Z/N from the high half.
 // 8 SWP   sub 0: acc <-> r[n]   1 PUT: r[n] = acc   2 GET: acc = r[n]
 //         (flags unchanged; src_sel must be 0; SWP with n = 0 is the
@@ -43,6 +45,8 @@
 //         1 FSUB acc = acc - opB      5 FF2I acc = int16(acc), trunc, saturate
 //         2 FMUL acc = acc * opB      6 FNEG acc = -acc
 //         3 FCMP Z = acc==opB, N = acc<opB, C = unordered   7 FABS acc = |acc|
+//         Every op except FCMP works on each 16-bit lane of acc and opB
+//         independently (W/16 lanes); FCMP compares lane 0 only.
 //         FADD/FSUB/FMUL/FI2F complete two clocks after they execute; the
 //         sequencer adds an idle cycle after them so the next instruction
 //         sees the result.
@@ -51,8 +55,9 @@
 // sequencer guarantees it): MUL/MULH results and ALU Z/N flags are written
 // in that clock, and operands for the next instruction are read in it.
 module dm16_pe #(
-    parameter [5:0] PE_ID  = 6'd0,
-    parameter       HAS_RF = 1'b1      // r1..r7 (flip-flops)
+    parameter [5:0]   PE_ID  = 6'd0,
+    parameter         HAS_RF = 1'b1,     // r1..r7 (flip-flops)
+    parameter integer W      = 16        // data width: a multiple of 16
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -63,31 +68,43 @@ module dm16_pe #(
     input  wire        instr_valid,
     input  wire [23:0] instr_next,
 
-    // Local memory (1024 x 16)
-    output reg  [9:0]  mem_addr,
-    output reg  [15:0] mem_wdata,
-    output reg         mem_we,
-    input  wire [15:0] mem_rdata,
+    // Local memory (1024 x W)
+    output reg  [9:0]   mem_addr,
+    output reg  [W-1:0] mem_wdata,
+    output reg          mem_we,
+    input  wire [W-1:0] mem_rdata,
 
     // 2D NEWS nearest-neighbour grid
-    input  wire [15:0] news_n_in,
-    input  wire [15:0] news_e_in,
-    input  wire [15:0] news_w_in,
-    input  wire [15:0] news_s_in,
-    output wire [15:0] news_out,
+    input  wire [W-1:0] news_n_in,
+    input  wire [W-1:0] news_e_in,
+    input  wire [W-1:0] news_w_in,
+    input  wire [W-1:0] news_s_in,
+    output wire [W-1:0] news_out,
 
-    // Network: {valid, 1'b0, dest[5:0], data[15:0]}
-    output reg  [23:0] net_tx_pkt,
-    output reg         net_tx_valid,
-    input  wire        net_tx_ready,
-    input  wire [15:0] net_rx_data,
-    input  wire        net_rx_valid,
-    output reg         net_rx_pop,
+    // Network: {valid, 1'b0, dest[5:0], data[W-1:0]}
+    output reg  [W+7:0] net_tx_pkt,
+    output reg          net_tx_valid,
+    input  wire         net_tx_ready,
+    input  wire [W-1:0] net_rx_data,
+    input  wire         net_rx_valid,
+    output reg          net_rx_pop,
 
     // Status & host readback
-    output wire        ctx_active,
-    output wire [15:0] acc_out
+    output wire         ctx_active,
+    output wire [W-1:0] acc_out
 );
+
+    // Width-derived constants
+    localparam integer FPL = W / 16;                 // bf16 lanes
+    function integer clog2;
+        input integer v;
+        integer t;
+        begin
+            clog2 = 0;
+            for (t = v - 1; t > 0; t = t >> 1) clog2 = clog2 + 1;
+        end
+    endfunction
+    localparam integer SHW = clog2(W);               // shift-amount bits
 
     // ------------------------------------------------------------------
     // Timing scheme
@@ -115,7 +132,7 @@ module dm16_pe #(
     wire [3:0]  flag_ctl = instr[13:10];
     wire [9:0]  imm10    = instr[9:0];
     wire [7:0]  imm8     = instr[7:0];
-    wire [15:0] simm     = {{6{imm10[9]}}, imm10};
+    wire [W-1:0] simm    = {{(W-10){imm10[9]}}, imm10};
 
     // Instruction fields (next instruction, for early decode)
     wire [3:0]  n_opcode = instr_next[23:20];
@@ -132,8 +149,8 @@ module dm16_pe #(
                F_I2F = 4'h4, F_F2I = 4'h5, F_NEG = 4'h6, F_ABS = 4'h7;
 
     // Registers
-    reg [15:0] acc;
-    reg [15:0] b_reg;
+    reg [W-1:0] acc;
+    reg [W-1:0] b_reg;
     reg [9:0]  mar;
     reg        flag_c, flag_z, flag_n;
     reg [3:0]  ctx_stack;
@@ -162,13 +179,13 @@ module dm16_pe #(
 
     (* syn_preserve = 1 *) reg        wr_pend;
     (* syn_preserve = 1 *) reg [9:0]  wr_addr_q;
-    (* syn_preserve = 1 *) reg [15:0] wr_data_q;
+    (* syn_preserve = 1 *) reg [W-1:0] wr_data_q;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wr_pend   <= 1'b0;
             wr_addr_q <= 10'd0;
-            wr_data_q <= 16'd0;
+            wr_data_q <= {W{1'b0}};
         end else begin
             wr_pend <= we_now;
             if (we_now) begin
@@ -187,7 +204,7 @@ module dm16_pe #(
     // Registered memory read data, for LDM/LDX. The sequencer waits two
     // cycles on any read: the BSRAM output is valid in the clock before
     // execute, so mem_q (and op_b, below) capture it then.
-    reg [15:0] mem_q;
+    reg [W-1:0] mem_q;
     always @(posedge clk) mem_q <= mem_rdata;
 
     // ------------------------------------------------------------------
@@ -197,12 +214,12 @@ module dm16_pe #(
     // ------------------------------------------------------------------
     wire [2:0]  r_idx   = imm10[2:0];
     wire [2:0]  n_r_idx = n_imm10[2:0];
-    wire [15:0] n_r_val;
+    wire [W-1:0] n_r_val;
     wire        r_put = exec && (opcode == OP_SWP) && (sub_op != 4'd2);   // SWP or PUT
 
     generate
         if (HAS_RF) begin : g_rf
-            reg [15:0] rf [0:7];
+            reg [W-1:0] rf [0:7];
             always @(posedge clk)
                 if (r_put && (r_idx != 3'd0))
                     rf[r_idx] <= acc;
@@ -215,12 +232,12 @@ module dm16_pe #(
     // ------------------------------------------------------------------
     // Operand B, selected one clock early (SWP/GET use src_sel 0 = r[n])
     // ------------------------------------------------------------------
-    reg [15:0] op_b;
+    reg [W-1:0] op_b;
     always @(posedge clk) begin
         case (n_src)
             2'b00: op_b <= n_r_val;
-            2'b01: op_b <= {{6{n_imm10[9]}}, n_imm10};
-            2'b10: op_b <= {10'd0, PE_ID};
+            2'b01: op_b <= {{(W-10){n_imm10[9]}}, n_imm10};
+            2'b10: op_b <= {{(W-6){1'b0}}, PE_ID};
             2'b11: op_b <= mem_rdata;
         endcase
     end
@@ -282,34 +299,35 @@ module dm16_pe #(
     // Integer ALU
     // ------------------------------------------------------------------
     // ADD / ADC / SUB share one adder; for SUB, C is the borrow.
-    wire [16:0] sum   = {1'b0, acc} + {1'b0, op_b ^ {16{d_sub}}} +
-                        {16'd0, d_sub | (d_adc & flag_c)};
-    wire        add_c = sum[16] ^ d_sub;
+    wire [W:0]  sum   = {1'b0, acc} + {1'b0, op_b ^ {W{d_sub}}} +
+                        {{W{1'b0}}, d_sub | (d_adc & flag_c)};
+    wire        add_c = sum[W] ^ d_sub;
 
-    // 17 x 17 signed multiply covers both signed and unsigned 16-bit
-    // operands (fits one 18 x 18 DSP); the low half is the same either way.
-    // The product is registered and written to acc in the idle clock.
-    wire signed [16:0] mul_a    = {~d_x & acc[15],  acc};
-    wire signed [16:0] mul_b    = {~d_x & op_b[15], op_b};
-    wire signed [33:0] mul_full = mul_a * mul_b;
-    reg         [31:0] mul_q;
-    always @(posedge clk) mul_q <= mul_full[31:0];
+    // (W+1) x (W+1) signed multiply covers both signed and unsigned W-bit
+    // operands (at W = 16 it fits one 18 x 18 DSP); the low half is the
+    // same either way. The product is registered and written to acc in the
+    // idle clock.
+    wire signed [W:0]     mul_a    = {~d_x & acc[W-1],  acc};
+    wire signed [W:0]     mul_b    = {~d_x & op_b[W-1], op_b};
+    wire signed [2*W+1:0] mul_full = mul_a * mul_b;
+    reg         [2*W-1:0] mul_q;
+    always @(posedge clk) mul_q <= mul_full[2*W-1:0];
 
-    // Barrel shifter: one 33-bit right shift by k = 0..16 of {hi, lo, 0}
+    // Barrel shifter: one (2W+1)-bit right shift by k = 0..W of {hi, lo, 0}
     // serves every shift and rotate.
-    //   right by n:  hi = fill, lo = acc,  k = n       result = sh[16:1], C = sh[0]
-    //   left by n:   hi = acc,  lo = fill, k = 16 - n  result = sh[16:1], C = sh[17]
-    wire [3:0]  sh_n    = op_b[3:0];
-    wire        sh_left = d_shln || (d_rot && !d_x);
-    wire [15:0] sh_hi   = d_shrn ? (d_x ? b_reg : 16'd0) :
-                          d_asrn ? {16{acc[15]}} : acc;
-    wire [15:0] sh_lo   = d_shln ? (d_x ? b_reg : 16'd0) : acc;
-    wire [4:0]  sh_k    = sh_left ? (5'd16 - {1'b0, sh_n}) : {1'b0, sh_n};
-    wire [32:0] sh_out  = {sh_hi, sh_lo, 1'b0} >> sh_k;
-    wire [15:0] sh_res  = sh_out[16:1];
-    wire        sh_c    = (sh_n == 4'd0) ? 1'b0 :
-                          d_rot          ? (d_x ? sh_res[15] : sh_res[0]) :
-                          sh_left        ? sh_out[17] : sh_out[0];
+    //   right by n:  hi = fill, lo = acc,  k = n      result = sh[W:1], C = sh[0]
+    //   left by n:   hi = acc,  lo = fill, k = W - n  result = sh[W:1], C = sh[W+1]
+    wire [SHW-1:0] sh_n    = op_b[SHW-1:0];
+    wire           sh_left = d_shln || (d_rot && !d_x);
+    wire [W-1:0]   sh_hi   = d_shrn ? (d_x ? b_reg : {W{1'b0}}) :
+                             d_asrn ? {W{acc[W-1]}} : acc;
+    wire [W-1:0]   sh_lo   = d_shln ? (d_x ? b_reg : {W{1'b0}}) : acc;
+    wire [SHW:0]   sh_k    = sh_left ? (W - {1'b0, sh_n}) : {1'b0, sh_n};
+    wire [2*W:0]   sh_out  = {sh_hi, sh_lo, 1'b0} >> sh_k;
+    wire [W-1:0]   sh_res  = sh_out[W:1];
+    wire           sh_c    = (sh_n == {SHW{1'b0}}) ? 1'b0 :
+                             d_rot   ? (d_x ? sh_res[W-1] : sh_res[0]) :
+                             sh_left ? sh_out[W+1] : sh_out[0];
 
     // ------------------------------------------------------------------
     // Context condition
@@ -337,39 +355,47 @@ module dm16_pe #(
     wire [1:0] fp_op = (sub_op == F_ADD) ? 2'd0 :
                        (sub_op == F_SUB) ? 2'd1 :
                        (sub_op == F_MUL) ? 2'd2 : 2'd3;
-    wire [15:0] fp_result;
-    reg         fp_wb1, fp_wb2;
-
-    dm16_bf16 u_fpu (
-        .clk    (clk),
-        .rst_n  (rst_n),
-        .start  (fp_start),
-        .op     (fp_op),
-        .a      (acc),
-        .b      (op_b),
-        .result (fp_result)
-    );
+    wire [W-1:0] fp_result;
+    wire [W-1:0] f2i;
+    reg          fp_wb1, fp_wb2;
 
     // bf16 -> int16, truncate toward zero, saturate
-    wire [7:0]  acc_e = acc[14:7];
-    reg  [15:0] f2i, f2i_mag;
-    always @(*) begin
-        f2i_mag = 16'd0;
-        if (acc_e < 8'd127)
-            f2i = 16'd0;
-        else if (acc_e >= 8'd142)
-            f2i = acc[15] ? 16'h8000 : 16'h7FFF;
-        else begin
-            f2i_mag = {1'b1, acc[6:0], 8'd0} >> (8'd142 - acc_e);
-            f2i     = acc[15] ? (~f2i_mag + 16'd1) : f2i_mag;
+    function [15:0] bf16_to_int16;
+        input [15:0] x;
+        reg   [15:0] mag;
+        begin
+            if (x[14:7] < 8'd127)
+                bf16_to_int16 = 16'd0;
+            else if (x[14:7] >= 8'd142)
+                bf16_to_int16 = x[15] ? 16'h8000 : 16'h7FFF;
+            else begin
+                mag           = {1'b1, x[6:0], 8'd0} >> (8'd142 - x[14:7]);
+                bf16_to_int16 = x[15] ? (~mag + 16'd1) : mag;
+            end
         end
-    end
+    endfunction
 
-    // Compare acc vs op_b (subnormals = zero, +0 == -0)
+    genvar l;
+    generate
+        for (l = 0; l < FPL; l = l + 1) begin : g_fpl
+            dm16_bf16 u_fpu (
+                .clk    (clk),
+                .rst_n  (rst_n),
+                .start  (fp_start),
+                .op     (fp_op),
+                .a      (acc [l*16 +: 16]),
+                .b      (op_b[l*16 +: 16]),
+                .result (fp_result[l*16 +: 16])
+            );
+            assign f2i[l*16 +: 16] = bf16_to_int16(acc[l*16 +: 16]);
+        end
+    endgenerate
+
+    // Compare lane 0 of acc vs op_b (subnormals = zero, +0 == -0)
     wire        x_nan = (acc[14:7]  == 8'hFF) && (acc[6:0]  != 7'd0);
     wire        y_nan = (op_b[14:7] == 8'hFF) && (op_b[6:0] != 7'd0);
-    wire [15:0] x_c   = (acc[14:7]  == 8'd0) ? 16'd0 : acc;
-    wire [15:0] y_c   = (op_b[14:7] == 8'd0) ? 16'd0 : op_b;
+    wire [15:0] x_c   = (acc[14:7]  == 8'd0) ? 16'd0 : acc[15:0];
+    wire [15:0] y_c   = (op_b[14:7] == 8'd0) ? 16'd0 : op_b[15:0];
     wire [15:0] x_key = x_c[15] ? ~x_c : (x_c | 16'h8000);
     wire [15:0] y_key = y_c[15] ? ~y_c : (y_c | 16'h8000);
 
@@ -380,38 +406,51 @@ module dm16_pe #(
     // ------------------------------------------------------------------
     // acc input: a flat AND-OR of every source, with one-hot selects
     // ------------------------------------------------------------------
-    reg         mul_wb, mulh_wb, zn_pend;
-    wire [15:0] mul_res = mulh_wb ? mul_q[31:16] : mul_q[15:0];
+    reg          mul_wb, mulh_wb, zn_pend;
+    wire [W-1:0] mul_res  = mulh_wb ? mul_q[2*W-1:W] : mul_q[W-1:0];
+    wire [W-1:0] sign_bits = {FPL{16'h8000}};        // bf16 sign of every lane
 
-    wire [15:0] acc_exec =
-          ({16{d_add}}    & sum[15:0])
-        | ({16{d_and}}    & (acc & op_b))
-        | ({16{d_or}}     & (acc | op_b))
-        | ({16{d_xor}}    & (acc ^ op_b))
-        | ({16{d_mov}}    & op_b)
-        | ({16{d_shl1}}   & {acc[14:0], 1'b0})
-        | ({16{d_shr1}}   & {1'b0, acc[15:1]})
-        | ({16{d_asr1}}   & {acc[15], acc[15:1]})
-        | ({16{d_bsh}}    & sh_res)
-        | ({16{d_ldi}}    & simm)
-        | ({16{d_ldi_hi}} & {imm8, acc[7:0]})
-        | ({16{d_ldi_lo}} & {acc[15:8], imm8})
-        | ({16{d_ldm}}    & mem_q)
-        | ({16{d_get}}    & op_b)
-        | ({16{d_news_n}} & news_n_in)
-        | ({16{d_news_e}} & news_e_in)
-        | ({16{d_news_w}} & news_w_in)
-        | ({16{d_news_s}} & news_s_in)
-        | ({16{d_f2i}}    & f2i)
-        | ({16{d_fneg}}   & (acc ^ 16'h8000))
-        | ({16{d_fabs}}   & (acc & 16'h7FFF));
+    // LDI hi/lo set bits 15:8 / 7:0 and leave the rest of acc alone
+    wire [W-1:0] ldi_hi_val, ldi_lo_val;
+    generate
+        if (W > 16) begin : g_ldi_wide
+            assign ldi_hi_val = {acc[W-1:16], imm8, acc[7:0]};
+            assign ldi_lo_val = {acc[W-1:8], imm8};
+        end else begin : g_ldi_16
+            assign ldi_hi_val = {imm8, acc[7:0]};
+            assign ldi_lo_val = {acc[15:8], imm8};
+        end
+    endgenerate
+
+    wire [W-1:0] acc_exec =
+          ({W{d_add}}    & sum[W-1:0])
+        | ({W{d_and}}    & (acc & op_b))
+        | ({W{d_or}}     & (acc | op_b))
+        | ({W{d_xor}}    & (acc ^ op_b))
+        | ({W{d_mov}}    & op_b)
+        | ({W{d_shl1}}   & {acc[W-2:0], 1'b0})
+        | ({W{d_shr1}}   & {1'b0, acc[W-1:1]})
+        | ({W{d_asr1}}   & {acc[W-1], acc[W-1:1]})
+        | ({W{d_bsh}}    & sh_res)
+        | ({W{d_ldi}}    & simm)
+        | ({W{d_ldi_hi}} & ldi_hi_val)
+        | ({W{d_ldi_lo}} & ldi_lo_val)
+        | ({W{d_ldm}}    & mem_q)
+        | ({W{d_get}}    & op_b)
+        | ({W{d_news_n}} & news_n_in)
+        | ({W{d_news_e}} & news_e_in)
+        | ({W{d_news_w}} & news_w_in)
+        | ({W{d_news_s}} & news_s_in)
+        | ({W{d_f2i}}    & f2i)
+        | ({W{d_fneg}}   & (acc ^ sign_bits))
+        | ({W{d_fabs}}   & (acc & ~sign_bits));
 
     wire acc_exec_we = d_add | d_and | d_or | d_xor | d_mov | d_shl1 | d_shr1 | d_asr1 |
                        d_bsh | d_ldi | d_ldi_hi | d_ldi_lo | d_ldm | d_get |
                        d_news_n | d_news_e | d_news_w | d_news_s | d_f2i | d_fneg | d_fabs;
 
     // Carry from the ALU ops that set it (logic ops and MOV clear it)
-    wire alu_c = (d_add & add_c) | (d_bsh & sh_c) | (d_shl1 & acc[15]) |
+    wire alu_c = (d_add & add_c) | (d_bsh & sh_c) | (d_shl1 & acc[W-1]) |
                  ((d_shr1 | d_asr1) & acc[0]);
     wire is_alu_flags = d_add | d_and | d_or | d_xor | d_mov | d_shl1 | d_shr1 | d_asr1 | d_bsh;
 
@@ -420,8 +459,8 @@ module dm16_pe #(
     // ------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            acc          <= 16'd0;
-            b_reg        <= 16'd0;
+            acc          <= {W{1'b0}};
+            b_reg        <= {W{1'b0}};
             mar          <= 10'd0;
             flag_c       <= 1'b0;
             flag_z       <= 1'b0;
@@ -432,7 +471,7 @@ module dm16_pe #(
             mulh_wb      <= 1'b0;
             zn_pend      <= 1'b0;
             ctx_stack    <= 4'b1111;
-            net_tx_pkt   <= 24'd0;
+            net_tx_pkt   <= {(W+8){1'b0}};
             net_tx_valid <= 1'b0;
             net_rx_pop   <= 1'b0;
         end else begin
@@ -454,12 +493,12 @@ module dm16_pe #(
             zn_pend <= exec && is_alu_flags;
             if (mul_wb) begin
                 acc    <= mul_res;
-                flag_z <= (mul_res == 16'd0);
-                flag_n <= mul_res[15];
+                flag_z <= (mul_res == {W{1'b0}});
+                flag_n <= mul_res[W-1];
             end
             if (zn_pend) begin
-                flag_z <= (acc == 16'd0);
-                flag_n <= acc[15];
+                flag_z <= (acc == {W{1'b0}});
+                flag_n <= acc[W-1];
             end
 
             if (exec) begin

@@ -3,7 +3,8 @@
 module dm16_uart_seq #(
     parameter integer CLK_HZ = 54_000_000,
     parameter integer BAUD   = 115_200,
-    parameter integer NUM_PE = 8
+    parameter integer NUM_PE = 8,
+    parameter integer W      = 16      // PE data width (ACC dumps send W/8 bytes per PE)
 )(
     input  wire         clk,
     input  wire         rst_n,
@@ -17,7 +18,7 @@ module dm16_uart_seq #(
 
     // Live status from 64-PE array
     input  wire [NUM_PE-1:0]   all_ctx,
-    input  wire [NUM_PE*16-1:0] all_acc,
+    input  wire [NUM_PE*W-1:0]  all_acc,
     input  wire                 any_active   // registered global OR of all_ctx
 );
 
@@ -139,12 +140,12 @@ module dm16_uart_seq #(
     //   0x04                      halt, pc = 0
     //   0x05                      read the context mask (NUM_PE/8 bytes)
     //   0x06 i2 i1 i0             execute one instruction immediately
-    //   0x07                      read every PE's ACC (2 * NUM_PE bytes)
+    //   0x07                      read every PE's ACC (W/8 * NUM_PE bytes)
     //   0x08 d_hi d_lo            set UART clocks per bit
     //   0x09                      read status byte {6'b0, any_active, running}
     //   0x0A a_hi a_lo n_hi n_lo  bulk read: n words from address a of every PE
     //                             (enables all PEs, then for each word injects
-    //                             LDM and streams the ACC dump: n * 2 * NUM_PE
+    //                             LDM and streams the ACC dump: n * W/8 * NUM_PE
     //                             bytes; clobbers ACC; the program must be idle)
     localparam integer PC_W = 12;
     reg [23:0]     imem [0:(1 << PC_W) - 1];
@@ -154,7 +155,8 @@ module dm16_uart_seq #(
     reg [4:0]  cmd_state;
     reg [PC_W-1:0] wr_addr;
     reg [23:0] wr_data;
-    reg [7:0]  dump_idx;
+    localparam integer ACC_BYTES = NUM_PE * W / 8;
+    reg [15:0] dump_idx;
 
     reg [23:0] inj_instr;
     reg        inj_valid;
@@ -214,7 +216,7 @@ module dm16_uart_seq #(
                 if (dump_idx < NUM_PE / 8) begin
                     tx_data_in <= all_ctx[dump_idx*8 +: 8];
                     tx_start   <= 1'b1;
-                    dump_idx   <= dump_idx + 8'd1;
+                    dump_idx   <= dump_idx + 16'd1;
                 end else cmd_state <= 4'd0;
             end
 
@@ -225,12 +227,12 @@ module dm16_uart_seq #(
                 cmd_state  <= 4'd0;
             end
 
-            // State 11: Stream every PE's 16-bit ACC, little-endian (2*NUM_PE bytes)
+            // State 11: Stream every PE's W-bit ACC, little-endian (ACC_BYTES bytes)
             if (cmd_state == 4'd11 && !tx_busy && !tx_start) begin
-                if (dump_idx < 2 * NUM_PE) begin
+                if (dump_idx < ACC_BYTES) begin
                     tx_data_in <= all_acc[dump_idx*8 +: 8];
                     tx_start   <= 1'b1;
-                    dump_idx   <= dump_idx + 8'd1;
+                    dump_idx   <= dump_idx + 16'd1;
                 end else cmd_state <= 4'd0;
             end
 
@@ -250,16 +252,16 @@ module dm16_uart_seq #(
                         br_ctx_done <= 1'b1;
                         cmd_state   <= 5'd20;
                     end else begin
-                        dump_idx    <= 8'd0;
+                        dump_idx    <= 16'd0;
                         cmd_state   <= 5'd22;
                     end
                 end
             end
             if (cmd_state == 5'd22 && !tx_busy && !tx_start) begin
-                if (dump_idx < 2 * NUM_PE) begin
+                if (dump_idx < ACC_BYTES) begin
                     tx_data_in <= all_acc[dump_idx*8 +: 8];
                     tx_start   <= 1'b1;
-                    dump_idx   <= dump_idx + 8'd1;
+                    dump_idx   <= dump_idx + 16'd1;
                 end else begin
                     br_addr   <= br_addr + 10'd1;
                     br_left   <= br_left - 11'd1;
@@ -274,9 +276,9 @@ module dm16_uart_seq #(
                         8'h02: cmd_state   <= 4'd6; // RUN
                         8'h03: single_step <= 1'b1; // STEP
                         8'h04: running     <= 1'b0; // HALT/RESET
-                        8'h05: begin dump_idx <= 8'd0; cmd_state <= 4'd10; end // READ_CTX
+                        8'h05: begin dump_idx <= 16'd0; cmd_state <= 4'd10; end // READ_CTX
                         8'h06: cmd_state   <= 4'd8; // INJECT_INSTR (3 bytes)
-                        8'h07: begin dump_idx <= 8'd0; cmd_state <= 4'd11; end // READ_ACC_GRID
+                        8'h07: begin dump_idx <= 16'd0; cmd_state <= 4'd11; end // READ_ACC_GRID
                         8'h08: cmd_state   <= 4'd13; // SET_BAUD (2 bytes: clocks per bit, big-endian)
                         8'h09: cmd_state   <= 4'd15; // READ_STATUS
                         8'h0A: cmd_state   <= 5'd16; // BULK_READ (4 bytes)
