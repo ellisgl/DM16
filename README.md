@@ -121,6 +121,44 @@ neighbours:
   ADC or sensor interface in the same FPGA, instead of the slow serial link,
   the array could filter or analyse data in real time.
 
+### A chat model that runs on the board
+
+`dm16_chat.py` is a tiny character-level chatbot whose whole reply is
+generated on the Tang Console. It builds on
+[Z80-μLM](https://github.com/HarryR/z80ai) by HarryR, a chat model made for a
+4 MHz Z80: it uses the same input encoding (the query's trigrams and the last
+8 reply characters' n-grams, hashed into 256 buckets) and was trained on that
+project's tinychat data. The network is new and designed for DM16: 256 → 256
+→ 128 → 40 with 4-bit weights, so each weight is one `MUL` and `ADD`, and its
+integer arithmetic is exactly what the PEs compute.
+
+For each character, every PE hashes the context itself, works out its own
+neurons of each layer, and shares them through an all-gather over the
+hypercube; two more hypercube passes find the highest-scoring character.
+The PC sends the query and reads back the finished reply: one request per
+reply.
+
+| | Z80-μLM's model (2-bit, on a Z80) | DM16 chat model (4-bit) |
+|---|---|---|
+| Replies exactly right, tinychat queries it was trained on | 39.0% | **99.7%** |
+| Replies exactly right, queries held out of training | — | 26.6% |
+| Speed | 1–2 s per character at 4 MHz | ~150 characters/s (~30 ms per reply) |
+
+It mostly recalls the replies it learned: with about 2,300 queries to learn
+from, it answers unseen queries less reliably. On the board it reproduces the
+integer model exactly: all 2,290 training queries gave identical replies, and
+`--check` compares every output value, character by character.
+
+```sh
+python3 dm16_chat.py                       # chat; uses models/tinychat_int4.npz
+> hello
+HI   (30 ms)
+
+# retrain (about 6 minutes, NumPy only); the data comes from the z80ai repo
+python3 dm16_chat_train.py --data ~/z80ai/examples/tinychat/training-data.txt.gz \
+                           --out models/tinychat_int4.npz
+```
+
 ## How it works
 
 ### The big picture
@@ -467,6 +505,8 @@ stable name, `/dev/tang_console_uart`. `DM16_BAUD` picks another rate (up to
 | `dm16_stress.py` | repeated runs to catch rare glitches |
 | `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus |
 | `dm16_raycast.py` | Wolfenstein-style ray caster, one ray per PE: W/S or arrows to move, A/D to turn; `--demo` for an autopilot tour, `--ascii` for text shading, `--check` to compare every column with a Python model |
+| `dm16_chat.py` | a 4-bit chat model that generates whole replies on the Tang Console (builds on [Z80-μLM](https://github.com/HarryR/z80ai)); `--check` compares every output value with the integer model, `--test-file` compares whole replies |
+| `dm16_chat_train.py` | trains that model with NumPy (quantization-aware); `--holdout` measures replies to unseen queries |
 | `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--zoom` (and `--loop`) to animate a zoom into a miniature copy of the set, `--check` to compare every pixel with a Python model |
 
 ## Source files
@@ -485,6 +525,7 @@ stable name, `/dev/tang_console_uart`. `DM16_BAUD` picks another rate (up to
 | `src/dm16.cst`, `src/dm16.sdc` | pin and timing constraints |
 | `dm16_host.py` | host library: encoding, assembler, UART helpers |
 | `dm16_model.py` | reference model of one PE at any width, used to check the RTL in simulation |
+| `models/tinychat_int4.npz` | the trained chat model (54 KB), trained on Z80-μLM's tinychat data |
 
 ## Scaling it up
 
@@ -509,6 +550,13 @@ On the GW5AST-138:
 | Block RAM | 70 / 340 (21%): 64 PE memories + program memory |
 | DSP | 96 / 298 (33%) |
 | Fmax | 58.3 MHz, run at 50 MHz (the slowest path is inside the hypercube router) |
+
+## Credits
+
+* The chat model (`dm16_chat.py`, `dm16_chat_train.py`, `models/`) builds on
+  [Z80-μLM](https://github.com/HarryR/z80ai) by HarryR: its input encoding,
+  character-by-character design and tinychat training data come from that
+  project.
 
 ## Known issues
 
