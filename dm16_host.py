@@ -1,40 +1,66 @@
 """
 DM16 host library: machine geometry, instruction encoding and UART helpers.
 
-Every DM16 script imports from here, so the machine size only lives in one
-place. Keep the geometry in sync with src/dm16_top.v.
+Every DM16 script imports from here, so the machine's shape only lives in
+one place. Pick the board with the DM16_BOARD environment variable:
 
-Tang Console 138K: 64 PEs (16 clusters x 4 on a 4-D hypercube, 8x8 NEWS
-torus), 16-bit datapath, bfloat16 FPU in every PE, 1024 x 16-bit words of
-memory per PE.
+  console138k  Tang Console 138K: 64 PEs (16 clusters x 4, 4-D hypercube,
+               8 x 8 NEWS torus), bf16 FPUs, 50 MHz, 2 Mbaud   (the default)
+  nano20k      Tang Nano 20K:  8 PEs (4 clusters x 2, 2-D hypercube, 4 x 2
+               torus), bf16 FPUs, 27 MHz, 1 Mbaud
+  nano9k       Tang Nano 9K:   8 PEs (4 clusters x 2, 2-D hypercube, 4 x 2
+               torus), integer only (no FPU), 27 MHz, 1 Mbaud from reset (its
+               BL702 USB bridge doesn't cope with changing rate at run time)
 
-The serial port defaults to /dev/tang_console_uart (udev symlink, see
-udev/85-tang-console-138k.rules); override it with DM16_PORT. The link comes
-up at 115200 baud after every FPGA reset; open_dm16() switches both ends to
-DM16_BAUD (default 2 Mbaud) and closing the port switches back to 115200.
+All have 16-bit PEs, 8 registers and 1024 words of memory per PE. open_dm16()
+reads the configuration the bitstream reports (command 0x0B) and refuses a
+board that doesn't match the profile.
+
+The serial port is found automatically when one Sipeed debugger is plugged
+in (the Tang Console's udev symlink /dev/tang_console_uart is used if it
+exists); override it with DM16_PORT. The link comes up at 115200 baud after
+every FPGA reset; open_dm16() switches both ends to DM16_BAUD (default: the
+board's rate) and closing the port switches back to 115200.
 """
 import os
 import struct
+import sys
 import time
 
 # ==============================================================================
-# Machine geometry (must match src/dm16_top.v)
+# Machine geometry: one profile per board (must match the board's top-level
+# file in src/; open_dm16() checks)
 # ==============================================================================
-DIMS  = 4                         # hypercube dimensions between clusters
-LANES = 4                         # PEs per cluster
-COLS  = 8                         # NEWS torus width
-DEFAULT_PORT = os.environ.get("DM16_PORT", "/dev/tang_console_uart")
-SYS_CLK_HZ   = 50_000_000         # must match src/dm16_top.v (1200 MHz / ODIV)
-BOOT_BAUD    = 115_200            # FPGA UART rate after reset
-DEFAULT_BAUD = int(os.environ.get("DM16_BAUD", "2000000"))
-MAX_BAUD     = 2_000_000          # the console's USB-UART bridge drops bytes above this
+BOARDS = {
+    "console138k": dict(dims=4, lanes=4, cols=8, clk_hz=50_000_000, baud=2_000_000,
+                        has_fpu=True, port="/dev/tang_console_uart"),
+    "nano20k":     dict(dims=2, lanes=2, cols=4, clk_hz=27_000_000, baud=1_000_000,
+                        has_fpu=True, port=None),
+    "nano9k":      dict(dims=2, lanes=2, cols=4, clk_hz=27_000_000, baud=1_000_000,
+                        has_fpu=False, port=None, boot_baud=1_000_000),
+}
+BOARD = os.environ.get("DM16_BOARD", "console138k")
+if BOARD not in BOARDS:
+    raise SystemExit(f"DM16_BOARD={BOARD!r} is not a known board: {', '.join(BOARDS)}")
+_P = BOARDS[BOARD]
+
+DIMS  = _P["dims"]                # hypercube dimensions between clusters
+LANES = _P["lanes"]               # PEs per cluster
+COLS  = _P["cols"]                # NEWS torus width
+HAS_FPU = _P["has_fpu"]           # bf16 FPU (without it, FPU instructions are no-ops)
+DEFAULT_PORT = os.environ.get("DM16_PORT") or None   # None: find it (see find_port)
+SYS_CLK_HZ   = _P["clk_hz"]
+BOOT_BAUD    = _P.get("boot_baud", 115_200)   # FPGA UART rate after reset
+DEFAULT_BAUD = int(os.environ.get("DM16_BAUD", _P["baud"]))
+MAX_BAUD     = 2_000_000          # the Sipeed USB-UART bridges drop bytes above this
 # Rates the bridge handles: an odd rate such as 1.5 Mbaud wedged its serial side
 SUPPORTED_BAUDS = (115_200, 230_400, 460_800, 500_000, 921_600, 1_000_000, 2_000_000)
 NUM_PE  = (1 << DIMS) * LANES     # PEs
 ROWS    = NUM_PE // COLS          # NEWS torus height
 PE_DIMS = DIMS + (LANES - 1).bit_length()   # bits in a PE_ID
-MEM_WORDS = 1024
-WORD_BITS = 16                    # PE width W; must match dm16_top.v (the scripts assume 16)
+MEM_WORDS = 1024                  # words per PE (2^MEM_AW); checked by open_dm16
+DIRECT_WORDS = 1024               # an immediate address reaches only these; above, use MAR
+WORD_BITS = 16                    # PE width W (the scripts assume 16); checked by open_dm16
 WORD_BYTES = WORD_BITS // 8
 WORD_MASK = (1 << WORD_BITS) - 1
 
@@ -74,8 +100,8 @@ ALU_X    = 0x4  # flag_ctl bit that selects the variant above
 
 # Operand B (src_sel) for ALU / FPU
 SRC_B, SRC_IMM, SRC_ID, SRC_MEM = 0, 1, 2, 3
-SRC_R = SRC_B   # register r[imm & 7]; r0 is b, so imm = 0 is the b register
-NUM_REGS = 8    # r0 (= b) .. r7
+NUM_REGS = 8    # r0 (= b) .. r[NUM_REGS-1]; checked by open_dm16
+SRC_R = SRC_B   # register r[imm]; r0 is b, so imm = 0 is the b register
 
 # SWP sub-ops (register number in imm)
 SWP_XCHG, SWP_PUT, SWP_GET = 0, 1, 2
@@ -115,9 +141,32 @@ def encode_instr(opcode, sub_op=0, src_sel=0, flag_ctl=0, imm10=0):
     )
 
 
+def _check_reg(r):
+    # The hardware uses the register number modulo NREGS, so a typo or a
+    # program written for more registers would silently use another one
+    if not 0 <= r < NUM_REGS:
+        raise ValueError(f"register r{r} does not exist (this build has r0..r{NUM_REGS - 1})")
+
+
+def _check_direct(addr, mem):
+    # An immediate address is 10 bits; anything else would silently wrap
+    if not mem & MEM_MAR and not 0 <= addr < DIRECT_WORDS:
+        raise ValueError(f"address {addr} is beyond what an immediate can reach "
+                         f"(0..{DIRECT_WORDS - 1}); set MAR and use LDX/STX or MEM_MAR")
+
+
+def _check_operand(src, imm, mem):
+    if src == SRC_R:
+        _check_reg(imm)
+    elif src == SRC_MEM:
+        _check_direct(imm, mem)
+
+
 def alu(sub_op, src=SRC_B, imm=0, mem=0, x=False):
-    """ALU op. For src=SRC_MEM pass the address as imm (or mem flags).
+    """ALU op. For src=SRC_MEM pass the address as imm (or mem flags); for
+    src=SRC_R the register number.
     x=True selects the variant: MULH unsigned, SHLN/SHRN funnel, ROL -> ROR."""
+    _check_operand(src, imm, mem)
     return encode_instr(OP_ALU, sub_op=sub_op, src_sel=src,
                         flag_ctl=mem | (ALU_X if x else 0), imm10=imm)
 
@@ -145,6 +194,7 @@ def alu_ref(sub_op, acc, opb, b=0, x=False):
 
 
 def fpu(sub_op, src=SRC_B, imm=0, mem=0):
+    _check_operand(src, imm, mem)
     return encode_instr(OP_FPU, sub_op=sub_op, src_sel=src, flag_ctl=mem, imm10=imm)
 
 
@@ -153,10 +203,12 @@ def ctx(cond=CTX_ALWAYS, action=CTX_SET, imm=0):
 
 
 def ldm(addr=0, mem=0):
+    _check_direct(addr, mem)
     return encode_instr(OP_LDM, flag_ctl=mem, imm10=addr)
 
 
 def stm(addr=0, mem=0):
+    _check_direct(addr, mem)
     return encode_instr(OP_STM, flag_ctl=mem, imm10=addr)
 
 
@@ -247,17 +299,20 @@ def assemble(items):
 
 def swp(r=0):
     """acc <-> r[r]"""
-    return encode_instr(OP_SWP, sub_op=SWP_XCHG, imm10=r & 7)
+    _check_reg(r)
+    return encode_instr(OP_SWP, sub_op=SWP_XCHG, imm10=r)
 
 
 def put(r):
     """r[r] = acc"""
-    return encode_instr(OP_SWP, sub_op=SWP_PUT, imm10=r & 7)
+    _check_reg(r)
+    return encode_instr(OP_SWP, sub_op=SWP_PUT, imm10=r)
 
 
 def get(r):
     """acc = r[r] (flags unchanged)"""
-    return encode_instr(OP_SWP, sub_op=SWP_GET, imm10=r & 7)
+    _check_reg(r)
+    return encode_instr(OP_SWP, sub_op=SWP_GET, imm10=r)
 
 
 NOP  = encode_instr(OP_NOP)
@@ -294,8 +349,57 @@ def _set_fpga_divider(ser, divider):
     ser.write(bytes([0x08, divider >> 8, divider & 0xFF]))
     ser.flush()
     # flush() only drains the OS buffer; give the USB-UART bridge time to
-    # send the bytes before the host side changes rate
-    time.sleep(0.03)
+    # send the bytes before the host side changes rate (or closes the port)
+    time.sleep(0.05)
+
+
+def find_port():
+    """The DM16 serial port: DM16_PORT, the board's udev symlink if there is
+    one, or else the UART interface (the second one) of the only Sipeed
+    debugger plugged in. Sipeed's debuggers present as an FTDI FT2232
+    (0403:6010): interface 0 is JTAG, interface 1 the UART to the FPGA."""
+    if DEFAULT_PORT:
+        return DEFAULT_PORT
+    if _P["port"] and os.path.exists(_P["port"]):
+        return _P["port"]
+    from serial.tools import list_ports
+    found = [p.device for p in list_ports.comports()
+             if p.vid == 0x0403 and p.pid == 0x6010 and (p.location or "").endswith(".1")]
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise RuntimeError("no Sipeed USB debugger found: plug the board in, or set DM16_PORT")
+    raise RuntimeError(f"several Sipeed debuggers found ({', '.join(found)}): "
+                       "set DM16_PORT to the one to use")
+
+
+CONFIG_LEN = 12
+
+
+def read_config(ser):
+    """The configuration the bitstream reports (command 0x0B), as a dict, or
+    None if it doesn't answer (bitstreams from before the command existed)."""
+    ser.reset_input_buffer()
+    ser.write(b"\x0b")
+    b = ser.read(CONFIG_LEN)
+    if len(b) != CONFIG_LEN or b[0] != ord("D"):
+        return None
+    return dict(w=b[2], dims=b[3], lanes=b[4], cols=b[5], nregs=1 << b[6],
+                mem_words=1 << b[7], has_fpu=bool(b[8] & 1), rf_bram=bool(b[8] & 2),
+                clk_hz=int.from_bytes(b[9:12], "little") * 1000)
+
+
+def check_config(cfg):
+    """Raise if the board's reported configuration doesn't match the profile."""
+    want = dict(w=WORD_BITS, dims=DIMS, lanes=LANES, cols=COLS, nregs=NUM_REGS,
+                mem_words=MEM_WORDS, has_fpu=HAS_FPU, clk_hz=SYS_CLK_HZ)
+    bad = [f"{k}: board {cfg[k]}, profile {v}" for k, v in want.items() if cfg[k] != v]
+    if bad:
+        match = [name for name, b in BOARDS.items()
+                 if (b["dims"], b["lanes"], b["cols"], b["has_fpu"], b["clk_hz"]) ==
+                    (cfg["dims"], cfg["lanes"], cfg["cols"], cfg["has_fpu"], cfg["clk_hz"])]
+        hint = f"; try DM16_BOARD={match[0]}" if match else ""
+        raise RuntimeError(f"the board doesn't match DM16_BOARD={BOARD} ({'; '.join(bad)}){hint}")
 
 
 def open_dm16(port=None, baud=None):
@@ -319,7 +423,7 @@ def open_dm16(port=None, baud=None):
                     pass
             super().close()
 
-    port = port or DEFAULT_PORT
+    port = port or find_port()
     baud = baud or DEFAULT_BAUD
     if baud > MAX_BAUD:
         raise ValueError(f"{baud} baud is above the bridge's reliable limit ({MAX_BAUD})")
@@ -330,32 +434,59 @@ def open_dm16(port=None, baud=None):
     if abs(SYS_CLK_HZ / divider - baud) / baud > 0.02:
         raise ValueError(f"{baud} baud is not reachable from {SYS_CLK_HZ} Hz "
                          f"(nearest {SYS_CLK_HZ / divider:.0f})")
-    ser = _DM16Serial(port, baud, timeout=0.2)
-    try:
-        ser.set_low_latency_mode(True)     # FTDI latency timer -> 1 ms
-    except Exception:
-        pass
+    # The Tang Nano 9K's BL702 bridge drops bytes sent right after the port
+    # is opened or its rate changes, so let it settle each time; and after
+    # the FPGA has been loaded over JTAG its UART side only works from the
+    # second time the port is opened, so a failed handshake reopens it once.
+    SETTLE = 0.05
 
-    def answers():
-        ser.baudrate = baud
-        ser.reset_input_buffer()
-        return len(read_ctx_mask_bytes(ser)) == (NUM_PE + 7) // 8
+    def handshake(ser):
+        def answers():
+            if ser.baudrate != baud:
+                ser.baudrate = baud
+                time.sleep(SETTLE)
+            ser.reset_input_buffer()
+            return len(read_ctx_mask_bytes(ser)) == (NUM_PE + 7) // 8
 
-    if not answers():
+        if answers() or answers():          # (a second try clears stale bytes)
+            return True
         for rate in dict.fromkeys([BOOT_BAUD, _last_baud()]):
             if rate == baud:
                 continue
-            time.sleep(0.005)       # let the FPGA's command timeout clear junk
+            time.sleep(0.01)        # let the FPGA's command timeout (2^17 clocks) clear junk
             ser.baudrate = rate
+            time.sleep(SETTLE)
             _set_fpga_divider(ser, divider)
             if answers():
-                break
-        else:
-            serial.Serial.close(ser)
-            raise RuntimeError(f"DM16 did not answer at {baud} baud on {port} "
-                               "(press the board's reset button to return it to 115200)")
+                return True
+        return False
+
+    for attempt in range(2):
+        ser = _DM16Serial(port, baud, timeout=0.2)
+        try:
+            ser.set_low_latency_mode(True)     # FTDI latency timer -> 1 ms
+        except Exception:
+            pass
+        time.sleep(SETTLE)
+        if handshake(ser):
+            break
+        serial.Serial.close(ser)
+    else:
+        raise RuntimeError(f"DM16 did not answer at {baud} baud on {port} (reload the "
+                           f"bitstream or press the board's reset button to return it to "
+                           f"{BOOT_BAUD} baud)")
     _remember_baud(baud)
     ser.timeout = 1
+    cfg = read_config(ser)
+    if cfg is None:
+        print("dm16_host: the board does not report its configuration (an older "
+              "bitstream?), so it can't be checked against the profile", file=sys.stderr)
+    else:
+        try:
+            check_config(cfg)
+        except RuntimeError:
+            ser.close()
+            raise
     return ser
 
 
@@ -488,10 +619,18 @@ def upload_and_run(ser, program, timeout=10.0):
 
 
 def per_pe_words_program(addr, values):
-    """Program that writes values[pe] (16-bit) to word `addr` of each PE."""
-    p = []
+    """Program that writes values[pe] (16-bit) to word `addr` of each PE.
+    Above the first 1024 words it goes through MAR (and leaves MAR = addr)."""
+    if not 0 <= addr < MEM_WORDS:
+        raise ValueError(f"address {addr} is outside PE memory (0..{MEM_WORDS - 1})")
+    if addr < DIRECT_WORDS:
+        store = [stm(addr)]
+        p = []
+    else:
+        store = [encode_instr(OP_STX)]
+        p = [ctx(CTX_ALWAYS), encode_instr(OP_LDI), *ldi16(addr), encode_instr(OP_MAR)]
     for pe, v in enumerate(values):
-        p += [ctx(CTX_IF_ID, imm=pe)] + ldi16(v) + [stm(addr)]
+        p += [ctx(CTX_IF_ID, imm=pe)] + ldi16(v) + store
     p.append(ctx(CTX_ALWAYS))
     return p
 

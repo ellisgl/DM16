@@ -9,8 +9,13 @@ module dm16_core #(
     parameter integer LANES  = 2,          // PEs per cluster (2 or 4)
     parameter integer COLS   = 4,          // NEWS torus width
     parameter integer CLK_HZ = 54_000_000, // for the UART baud divider
+    parameter integer BAUD   = 115_200,    // UART rate after reset (the host may change it)
     parameter integer W      = 16,         // PE data width: 16, 32, 64, ... (a power of two)
-    parameter integer GOWIN_SP = 1          // Gowin BSRAM primitives (0: inferred RAM)
+    parameter integer GOWIN_SP = 1,         // Gowin BSRAM primitives (0: inferred RAM)
+    parameter integer NREGS  = 8,           // PE registers r0..r[NREGS-1]: a power of two, 2..1024
+    parameter         RF_BRAM = 1'b0,       // registers in block RAM (1) or flip-flops (0)
+    parameter integer MEM_AW = 10,          // PE memory = 2^MEM_AW words (<= W; <= 13 with GOWIN_SP)
+    parameter         HAS_FPU = 1'b1        // bf16 FPU lanes (0: FPU instructions are no-ops)
 )(
     input  wire       clk,
     input  wire       rst_n,
@@ -40,8 +45,16 @@ module dm16_core #(
     // 1. UART host loader & global SIMD sequencer
     dm16_uart_seq #(
         .CLK_HZ        (CLK_HZ),
+        .BAUD          (BAUD),
         .NUM_PE        (NUM_PE),
-        .W             (W)
+        .W             (W),
+        .DIMS          (DIMS),
+        .LANES         (LANES),
+        .COLS          (COLS),
+        .NREGS         (NREGS),
+        .MEM_AW        (MEM_AW),
+        .HAS_FPU       (HAS_FPU),
+        .RF_BRAM       (RF_BRAM)
     ) u_seq (
         .clk           (clk),
         .rst_n         (rst_n),
@@ -108,7 +121,11 @@ module dm16_core #(
                 .LANES    (LANES),
                 .BASE_ID  (n * LANES),
                 .W        (W),
-                .GOWIN_SP (GOWIN_SP)
+                .GOWIN_SP (GOWIN_SP),
+                .NREGS    (NREGS),
+                .RF_BRAM  (RF_BRAM),
+                .MEM_AW   (MEM_AW),
+                .HAS_FPU  (HAS_FPU)
             ) u_cluster (
                 .clk          (clk),
                 .rst_n        (rst_n),

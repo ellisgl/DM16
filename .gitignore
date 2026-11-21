@@ -4,3 +4,4 @@ __pycache__/
 *.gprj.user
 .venv/
 build.log
+build/

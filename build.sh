@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
-# Build DM16 (build.tcl -> impl/pnr/DM16.fs) with every line of build.log timestamped.
-# Retries when the Gowin license server doesn't answer.
+# Build DM16 with every line of the build log timestamped. Retries when the
+# Gowin license server doesn't answer.
 #
-#   ./build.sh            # GOWIN_HOME defaults to ~/Gowin_V1.9.12.04_linux
+#   ./build.sh            # Tang Console 138K -> impl/pnr/DM16.fs, build.log
+#   ./build.sh nano20k    # Tang Nano 20K     -> build/nano20k/impl/pnr/DM16.fs, build/nano20k/build.log
+#   ./build.sh nano9k     # Tang Nano 9K      -> build/nano9k/impl/pnr/DM16.fs, build/nano9k/build.log
+#
+# GOWIN_HOME defaults to ~/Gowin_V1.9.12.04_linux.
 set -u
 cd "$(dirname "$0")"
+ROOT=$(pwd)
+
+BOARD=${1:-console138k}
+case "$BOARD" in
+    console138k) DIR=. ;;
+    nano20k|nano9k) DIR=build/$BOARD ;;
+    *) echo "unknown board '$BOARD' (console138k, nano20k or nano9k)"; exit 2 ;;
+esac
+mkdir -p "$DIR" && cd "$DIR"
+export DM16_BOARD=$BOARD
 
 GOWIN_HOME=${GOWIN_HOME:-$HOME/Gowin_V1.9.12.04_linux}
 LOG=build.log
@@ -22,7 +36,7 @@ start=$(date +%s)
 for try in $(seq 1 $TRIES); do
     {
         echo "=== build start (try $try of $TRIES)"
-        "$GOWIN_HOME/IDE/bin/gw_sh" build.tcl 2>&1   # no stdbuf: it replaces LD_PRELOAD
+        "$GOWIN_HOME/IDE/bin/gw_sh" "$ROOT/build.tcl" 2>&1   # no stdbuf: it replaces LD_PRELOAD
         echo "=== gw_sh exit status $?"
     } | stamp > "$LOG"
     grep -q "License verification failed" "$LOG" || break

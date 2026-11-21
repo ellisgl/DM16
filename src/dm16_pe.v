@@ -2,11 +2,14 @@
 // DM16 processing element - W-bit datapath (W = 16, 32, 64, ...: a multiple
 // of 16) with W/16 bfloat16 FPU lanes. DM16 on the Tang Console uses W = 16.
 //
-// Registers: acc, b (W bits; at W = 16 each holds an int16 or a bf16), mar (10 bits),
-//            flags C/Z/N, 4-deep context stack, and (with HAS_RF) r1..r7.
-//            r0 is b. Without HAS_RF every r[n] is b.
-//            n = imm10[2:0] wherever a register is named.
-// Memory:    1024 x W-bit words, word addressed.
+// Registers: acc, b (W bits; at W = 16 each holds an int16 or a bf16),
+//            mar (MEM_AW bits), flags C/Z/N, 4-deep context stack, and (with
+//            HAS_RF) r1..r[NREGS-1]. r0 is b. Without HAS_RF every r[n] is b.
+//            n = imm10 mod NREGS wherever a register is named, so a program
+//            that names a register >= NREGS silently gets r[n mod NREGS].
+// Memory:    2^MEM_AW W-bit words (1024 on the Tang), word addressed.
+//            Direct addresses (imm10) reach only the first 1024 words; the
+//            rest of a larger memory is reached through mar.
 //
 // Instruction (24 bits): opcode[23:20] sub_op[19:16] src_sel[15:14]
 //                        flag_ctl[13:10] imm10[9:0]
@@ -16,14 +19,15 @@
 //
 // Memory addressing (any instruction touching memory):
 //   addr = flag_ctl[0] ? mar : imm10;  flag_ctl[1] = post-increment mar
-//   (LDX/STX always use mar.)
+//   (LDX/STX always use mar; mar wraps at 2^MEM_AW. With MEM_AW < 10 an
+//   immediate address uses its low MEM_AW bits.)
 //
 // 0 NOP
 // 1 LDI   sub 0: acc = sext(imm10)   1: acc[15:8] = imm8   2: acc[7:0] = imm8
 //         (other bits unchanged; wider constants: SHLN 8 then OR imm8)
 // 2 LDM   acc = mem[addr]            3 STM  mem[addr] = acc
 // 4 LDX   acc = mem[mar]             5 STX  mem[mar]  = acc
-// 6 MAR   mar = src_sel==0 ? acc[9:0] : imm10
+// 6 MAR   mar = src_sel==0 ? acc[MEM_AW-1:0] : imm10
 // 7 ALU   acc = acc OP opB: 0 ADD 1 ADC 2 SUB 3 AND 4 OR 5 XOR 6 SHL 7 SHR
 //                           8 MOV 9 ASR A MUL (low W bits)
 //                           B MULH (high W bits, signed; X = unsigned)
@@ -47,6 +51,8 @@
 //         3 FCMP Z = acc==opB, N = acc<opB, C = unordered   7 FABS acc = |acc|
 //         Every op except FCMP works on each 16-bit lane of acc and opB
 //         independently (W/16 lanes); FCMP compares lane 0 only.
+//         With HAS_FPU = 0 (small FPGAs) every FPU instruction is a no-op,
+//         apart from a memory operand's mar post-increment.
 //         FADD/FSUB/FMUL/FI2F complete two clocks after they execute; the
 //         sequencer adds an idle cycle after them so the next instruction
 //         sees the result.
@@ -56,8 +62,12 @@
 // in that clock, and operands for the next instruction are read in it.
 module dm16_pe #(
     parameter [5:0]   PE_ID  = 6'd0,
-    parameter         HAS_RF = 1'b1,     // r1..r7 (flip-flops)
-    parameter integer W      = 16        // data width: a multiple of 16
+    parameter         HAS_RF  = 1'b1,    // registers r1..r[NREGS-1]
+    parameter integer W       = 16,      // data width: a power of two, >= 16
+    parameter integer NREGS   = 8,       // r0 (= b) .. r[NREGS-1]: a power of two, 2..1024
+    parameter         RF_BRAM = 1'b0,    // 1: r1.. in a block RAM; 0: flip-flops
+    parameter integer MEM_AW  = 10,      // memory = 2^MEM_AW words; MEM_AW <= W
+    parameter         HAS_FPU = 1'b1     // bf16 lanes; 0 makes FPU instructions no-ops
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -69,7 +79,7 @@ module dm16_pe #(
     input  wire [23:0] instr_next,
 
     // Local memory (1024 x W)
-    output reg  [9:0]   mem_addr,
+    output reg  [MEM_AW-1:0] mem_addr,
     output reg  [W-1:0] mem_wdata,
     output reg          mem_we,
     input  wire [W-1:0] mem_rdata,
@@ -105,6 +115,7 @@ module dm16_pe #(
         end
     endfunction
     localparam integer SHW = clog2(W);               // shift-amount bits
+    localparam integer RW  = (NREGS < 2) ? 1 : clog2(NREGS);   // register-number bits
 
     // ------------------------------------------------------------------
     // Timing scheme
@@ -151,7 +162,7 @@ module dm16_pe #(
     // Registers
     reg [W-1:0] acc;
     reg [W-1:0] b_reg;
-    reg [9:0]  mar;
+    reg [MEM_AW-1:0] mar;
     reg        flag_c, flag_z, flag_n;
     reg [3:0]  ctx_stack;
     wire       ctx  = ctx_stack[0];
@@ -174,17 +185,26 @@ module dm16_pe #(
                      (opcode == OP_LDX) || (opcode == OP_STX) ||
                      (((opcode == OP_ALU) || (opcode == OP_FPU)) && (src_sel == 2'b11));
     wire use_mar   = (opcode == OP_LDX) || (opcode == OP_STX) || (uses_mem && flag_ctl[0]);
-    wire [9:0] addr_now = use_mar ? mar : imm10;
+    // An immediate address: imm10, zero-extended or cut to MEM_AW bits
+    wire [MEM_AW-1:0] imm_addr;
+    generate
+        if (MEM_AW > 10) begin : g_imm_ext
+            assign imm_addr = {{(MEM_AW-10){1'b0}}, imm10};
+        end else begin : g_imm_cut
+            assign imm_addr = imm10[MEM_AW-1:0];
+        end
+    endgenerate
+    wire [MEM_AW-1:0] addr_now = use_mar ? mar : imm_addr;
     wire we_now    = exec && ((opcode == OP_STM) || (opcode == OP_STX));
 
     (* syn_preserve = 1 *) reg        wr_pend;
-    (* syn_preserve = 1 *) reg [9:0]  wr_addr_q;
+    (* syn_preserve = 1 *) reg [MEM_AW-1:0] wr_addr_q;
     (* syn_preserve = 1 *) reg [W-1:0] wr_data_q;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wr_pend   <= 1'b0;
-            wr_addr_q <= 10'd0;
+            wr_addr_q <= {MEM_AW{1'b0}};
             wr_data_q <= {W{1'b0}};
         end else begin
             wr_pend <= we_now;
@@ -208,45 +228,99 @@ module dm16_pe #(
     always @(posedge clk) mem_q <= mem_rdata;
 
     // ------------------------------------------------------------------
-    // Register file: r0 is b_reg; r1..r7 are flip-flops (this device has
-    // no distributed RAM; entry 0 of rf is never used). Read early, for
-    // the next instruction; written when SWP/PUT executes.
+    // Register file and operand B
+    //
+    // r0 is b_reg; r1..r[NREGS-1] are flip-flops (RF_BRAM = 0) or a block
+    // RAM (RF_BRAM = 1). They are read one clock early, for the next
+    // instruction (its number is on instr_next), and written when SWP/PUT
+    // executes. Operand B (r[n], immediate, PE_ID or the memory word) is
+    // likewise selected in that early clock. SWP/GET use src_sel 0 = r[n].
     // ------------------------------------------------------------------
-    wire [2:0]  r_idx   = imm10[2:0];
-    wire [2:0]  n_r_idx = n_imm10[2:0];
-    wire [W-1:0] n_r_val;
-    wire        r_put = exec && (opcode == OP_SWP) && (sub_op != 4'd2);   // SWP or PUT
+    wire [RW-1:0] r_idx   = imm10[RW-1:0];
+    wire [RW-1:0] n_r_idx = n_imm10[RW-1:0];
+    wire          r_put   = exec && (opcode == OP_SWP) && (sub_op != 4'd2);   // SWP or PUT
+    wire [W-1:0]  n_simm  = {{(W-10){n_imm10[9]}}, n_imm10};
+    wire [W-1:0]  op_b;
 
     generate
-        if (HAS_RF) begin : g_rf
-            reg [W-1:0] rf [0:7];
+        if (HAS_RF && !RF_BRAM) begin : g_rf
+            // Flip-flops: an NREGS-way select feeds the op_b register
+            reg [W-1:0] rf [0:NREGS-1];
+            reg [W-1:0] op_b_q;
             always @(posedge clk)
-                if (r_put && (r_idx != 3'd0))
+                if (r_put && (r_idx != {RW{1'b0}}))
                     rf[r_idx] <= acc;
-            assign n_r_val = (n_r_idx == 3'd0) ? b_reg : rf[n_r_idx];
+            wire [W-1:0] n_r_val = (n_r_idx == {RW{1'b0}}) ? b_reg : rf[n_r_idx];
+            always @(posedge clk) begin
+                case (n_src)
+                    2'b00: op_b_q <= n_r_val;
+                    2'b01: op_b_q <= n_simm;
+                    2'b10: op_b_q <= {{(W-6){1'b0}}, PE_ID};
+                    2'b11: op_b_q <= mem_rdata;
+                endcase
+            end
+            assign op_b = op_b_q;
+        end else if (HAS_RF) begin : g_rf
+            // Block RAM with a clocked read: the read address (from
+            // instr_next) is sampled at the same edge that loads the rest of
+            // operand B, so the data is ready when the instruction executes.
+            // The write is registered, so the RAM's write enable comes
+            // straight from a flip-flop (Gowin BSRAMs make spurious writes on
+            // a glitchy WRE); it lands in the idle clock after SWP/PUT, at
+            // the same edge as the next instruction's read, so a write and a
+            // read of the same register on that edge are bypassed.
+            // Without the attribute Gowin synthesis builds small memories
+            // from flip-flops (a 32 x 16 file became 496 flip-flops per PE)
+            (* syn_ramstyle = "block_ram" *) reg [W-1:0] rf [0:NREGS-1];
+            reg [W-1:0]  rf_q, op_o, byp_d;
+            reg          sel_rf, byp;
+            reg          rf_we_q;
+            reg [RW-1:0] rf_wa_q;
+            reg [W-1:0]  rf_wd_q;
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) rf_we_q <= 1'b0;
+                else        rf_we_q <= r_put && (r_idx != {RW{1'b0}});
+            end
+            always @(posedge clk) begin
+                rf_wa_q <= r_idx;
+                rf_wd_q <= acc;
+            end
+            always @(posedge clk) begin
+                if (rf_we_q)
+                    rf[rf_wa_q] <= rf_wd_q;
+                rf_q <= rf[n_r_idx];
+            end
+            always @(posedge clk) begin
+                sel_rf <= (n_src == 2'b00) && (n_r_idx != {RW{1'b0}});
+                byp    <= rf_we_q && (rf_wa_q == n_r_idx);
+                byp_d  <= rf_wd_q;
+                case (n_src)
+                    2'b00: op_o <= b_reg;
+                    2'b01: op_o <= n_simm;
+                    2'b10: op_o <= {{(W-6){1'b0}}, PE_ID};
+                    2'b11: op_o <= mem_rdata;
+                endcase
+            end
+            assign op_b = !sel_rf ? op_o : (byp ? byp_d : rf_q);
         end else begin : g_no_rf   // every r[n] is b
-            assign n_r_val = b_reg;
+            reg [W-1:0] op_b_q;
+            always @(posedge clk) begin
+                case (n_src)
+                    2'b00: op_b_q <= b_reg;
+                    2'b01: op_b_q <= n_simm;
+                    2'b10: op_b_q <= {{(W-6){1'b0}}, PE_ID};
+                    2'b11: op_b_q <= mem_rdata;
+                endcase
+            end
+            assign op_b = op_b_q;
         end
     endgenerate
-
-    // ------------------------------------------------------------------
-    // Operand B, selected one clock early (SWP/GET use src_sel 0 = r[n])
-    // ------------------------------------------------------------------
-    reg [W-1:0] op_b;
-    always @(posedge clk) begin
-        case (n_src)
-            2'b00: op_b <= n_r_val;
-            2'b01: op_b <= {{(W-10){n_imm10[9]}}, n_imm10};
-            2'b10: op_b <= {{(W-6){1'b0}}, PE_ID};
-            2'b11: op_b <= mem_rdata;
-        endcase
-    end
 
     // ------------------------------------------------------------------
     // Early decode: one-hot selects for the instruction about to execute
     // ------------------------------------------------------------------
     wire n_alu = (n_opcode == OP_ALU);
-    wire n_fpu = (n_opcode == OP_FPU);
+    wire n_fpu = (n_opcode == OP_FPU) && HAS_FPU;
 
     reg d_add, d_and, d_or, d_xor, d_mov, d_shl1, d_shr1, d_asr1, d_bsh, d_mul;
     reg d_sub, d_adc, d_mulh, d_x;
@@ -351,7 +425,7 @@ module dm16_pe #(
     // ------------------------------------------------------------------
     wire fp_arith = (opcode == OP_FPU) &&
                     ((sub_op == F_ADD) || (sub_op == F_SUB) || (sub_op == F_MUL) || (sub_op == F_I2F));
-    wire fp_start = exec && fp_arith;
+    wire fp_start = exec && fp_arith && HAS_FPU;
     wire [1:0] fp_op = (sub_op == F_ADD) ? 2'd0 :
                        (sub_op == F_SUB) ? 2'd1 :
                        (sub_op == F_MUL) ? 2'd2 : 2'd3;
@@ -377,7 +451,7 @@ module dm16_pe #(
 
     genvar l;
     generate
-        for (l = 0; l < FPL; l = l + 1) begin : g_fpl
+        for (l = 0; l < (HAS_FPU ? FPL : 0); l = l + 1) begin : g_fpl
             dm16_bf16 u_fpu (
                 .clk    (clk),
                 .rst_n  (rst_n),
@@ -388,6 +462,10 @@ module dm16_pe #(
                 .result (fp_result[l*16 +: 16])
             );
             assign f2i[l*16 +: 16] = bf16_to_int16(acc[l*16 +: 16]);
+        end
+        if (!HAS_FPU) begin : g_no_fpu      // never selected: FPU ops are no-ops
+            assign fp_result = {W{1'b0}};
+            assign f2i       = {W{1'b0}};
         end
     endgenerate
 
@@ -461,7 +539,7 @@ module dm16_pe #(
         if (!rst_n) begin
             acc          <= {W{1'b0}};
             b_reg        <= {W{1'b0}};
-            mar          <= 10'd0;
+            mar          <= {MEM_AW{1'b0}};
             flag_c       <= 1'b0;
             flag_z       <= 1'b0;
             flag_n       <= 1'b0;
@@ -509,7 +587,7 @@ module dm16_pe #(
                 if (d_mul)
                     flag_c <= 1'b0;
                 if (uses_mem && flag_ctl[1])
-                    mar <= mar + 10'd1;
+                    mar <= mar + 1'b1;
             end
 
             if (instr_valid && (opcode == OP_CTX)) begin
@@ -523,10 +601,10 @@ module dm16_pe #(
 
             if (exec) begin
                 case (opcode)
-                    OP_MAR: mar <= (src_sel == 2'b00) ? acc[9:0] : imm10;
+                    OP_MAR: mar <= (src_sel == 2'b00) ? acc[MEM_AW-1:0] : imm_addr;
 
-                    OP_SWP:             // r1..r7 are written by g_rf
-                        if ((sub_op != 4'd2) && (r_idx == 3'd0 || !HAS_RF))
+                    OP_SWP:             // r1.. are written by g_rf
+                        if ((sub_op != 4'd2) && (r_idx == {RW{1'b0}} || !HAS_RF))
                             b_reg <= acc;                           // SWP, PUT
 
                     OP_SEND: begin
@@ -545,7 +623,7 @@ module dm16_pe #(
                     end
 
                     OP_FPU:
-                        if (sub_op == F_CMP) begin
+                        if ((sub_op == F_CMP) && HAS_FPU) begin
                             flag_c <= x_nan | y_nan;
                             flag_z <= !(x_nan | y_nan) && (x_key == y_key);
                             flag_n <= !(x_nan | y_nan) && (x_key <  y_key);

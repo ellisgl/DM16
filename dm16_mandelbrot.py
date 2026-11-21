@@ -1,7 +1,8 @@
 """
 Mandelbrot set on DM16, using BANY for the data-dependent loop.
 
-Each of the 64 PEs computes one pixel of an 8 x 8 block. All PEs iterate
+Each PE computes one pixel of a block (8 x 8 on the Tang Console's 64 PEs,
+4 x 2 on the Nano 20K, 2 x 2 on the Nano 9K). All PEs iterate
 z = z^2 + c together; a PE switches itself off (context flag) when its z
 escapes or it reaches the iteration limit, and the sequencer's BANY loops
 back while ANY PE is still active. Two hardware LOOPs step the block across
@@ -45,8 +46,8 @@ BLOCK = COLS                    # 8 x 8 pixels per pass
 ROWS_PER_BLOCK = NUM_PE // COLS
 
 # Per-PE memory
-CR0, CRB, CIB, DX8, DY8 = 0x100, 0x101, 0x102, 0x103, 0x104
-RES = 0x200                     # one result word per block, MAR-addressed
+CR0, CRB, CIB, DX8, DY8 = 0x3F0, 0x3F1, 0x3F2, 0x3F3, 0x3F4
+RES = 0x000                     # one result word per block, MAR-addressed (up to 0x3EF)
 
 DONE_MARK = 0x3FF & -512        # OR-ing -512 sets bits 9..15: "this PE is done"
 ESCAPE = 257                    # escape when (x^2 + y^2) / 4 >= 257 in Q8.8, i.e. |z|^2 > ~4
@@ -250,7 +251,7 @@ def main():
         ap.error(f"size must be a multiple of {BLOCK} x {ROWS_PER_BLOCK}")
     if not 1 <= args.max_iter <= 511:
         ap.error("--max-iter must be 1..511")
-    if (w // BLOCK) * (h // ROWS_PER_BLOCK) > 0x400 - RES:
+    if (w // BLOCK) * (h // ROWS_PER_BLOCK) > CR0 - RES:
         ap.error("image too large for the result area")
     if not 0 < args.zoom_factor < 1:
         ap.error("--zoom-factor must be between 0 and 1")

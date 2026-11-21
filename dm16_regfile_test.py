@@ -16,7 +16,7 @@ import argparse
 
 import dm16_bf16_ref as ref
 from dm16_host import (
-    DEFAULT_PORT, open_dm16, NUM_PE, NUM_REGS,
+    DEFAULT_PORT, open_dm16, NUM_PE, NUM_REGS, HAS_FPU,
     OP_LDI, LDI_HI, LDI_LO, OP_ALU, OP_SWP, OP_CTX, OP_STM, OP_LDM, OP_FPU,
     ALU_ADD, ALU_AND, ALU_MOV, ALU_SHLN, SRC_R, SRC_IMM, SRC_ID, SRC_MEM,
     CTX_ALWAYS, CTX_IF_Z, CTX_IF_NZ, SWP_XCHG, SWP_PUT, SWP_GET, F_ADD, F_MUL,
@@ -130,7 +130,10 @@ def main():
         p += [ldm(X + i), fpu(F_MUL, SRC_MEM, Y + i),
               fpu(F_ADD, SRC_R, 2), put(2)]
     p += [get(2), stm(OUT)]
-    tests.append((f"bf16 dot product ({n_dot} terms, sum in r2)", p, [0]))
+    if HAS_FPU:
+        tests.append((f"bf16 dot product ({n_dot} terms, sum in r2)", p, [0]))
+    else:
+        print("(no FPU on this board: the bf16 dot product is skipped)")
 
     models = [PEModel(pe, pe in rf_pes, {}) for pe in range(NUM_PE)]
     for pe, m in enumerate(models):

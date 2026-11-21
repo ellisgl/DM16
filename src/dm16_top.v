@@ -29,7 +29,11 @@ module dm16_top (
         .LANES  (4),
         .COLS   (8),
         .CLK_HZ (CLK_HZ),
-        .W      (16)          // PE width; keep in sync with WORD_BITS in dm16_host.py
+        .W       (16),        // PE width; keep in sync with WORD_BITS in dm16_host.py
+        .NREGS   (8),         // registers r0..r7; keep in sync with NUM_REGS
+        .RF_BRAM (1'b0),      // registers in flip-flops
+        .MEM_AW  (10),        // 1024 words per PE; keep in sync with MEM_WORDS
+        .HAS_FPU (1'b1)       // bf16 FPU in every PE
     ) u_core (
         .clk            (clk),
         .rst_n          (key_reset_n & pll_lock),

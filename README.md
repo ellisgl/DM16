@@ -9,7 +9,9 @@ private memory. The PEs talk to each other over two networks: a nearest-neighbou
 **NEWS grid** and a **4-D hypercube** packet router. A host PC loads programs
 and data over USB serial and reads the results back.
 
-It runs on the Sipeed **Tang Console 138K** (Gowin GW5AST-138) at 50 MHz.
+It runs on the Sipeed **Tang Console 138K** (Gowin GW5AST-138) at 50 MHz, and
+in smaller versions on the budget **Tang Nano 20K** and **Tang Nano 9K** (see
+[Boards](#boards)).
 
 ![The Mandelbrot set computed on DM16, shown in the terminal](docs/mandelbrot.png)
 
@@ -373,29 +375,84 @@ The host library hides this, but the UART commands are:
 | `02` | `e_hi e_lo` | run from 0 until `pc == e` or `HALT` |
 | `03` | | single step |
 | `04` | | halt, `pc = 0` |
-| `05` | | read the context mask (8 bytes) |
+| `05` | | read the context mask (one bit per PE: 8 bytes on the Console, 1 on a Nano) |
 | `06` | `i2 i1 i0` | execute one instruction now |
-| `07` | | read every PE's `acc` (128 bytes) |
+| `07` | | read every PE's `acc` (2 bytes per PE) |
 | `08` | `d_hi d_lo` | set the UART clocks per bit (baud rate) |
 | `09` | | read status: bit 0 running, bit 1 any PE active |
-| `0A` | `a_hi a_lo n_hi n_lo` | read `n` words from address `a` of every PE (`n` × 128 bytes) |
+| `0B` | | read the configuration: 12 bytes (`'D'`, format, width, dimensions, lanes, columns, log₂ registers, log₂ memory words, flags, clock in kHz) |
+| `0A` | `a_hi a_lo n_hi n_lo` | read `n` words from address `a` of every PE (`n` × 2 bytes per PE; above the first 1,024 words it goes through `mar`) |
+
+## Boards
+
+| | Tang Console 138K | Tang Nano 20K | Tang Nano 9K |
+|---|---|---|---|
+| FPGA | Gowin GW5AST-138 | Gowin GW2AR-18 | Gowin GW1NR-9 |
+| PEs | 64 (16 clusters × 4) | 8 (4 clusters × 2) | 8 (4 clusters × 2) |
+| Hypercube / NEWS torus | 4-D / 8 × 8 | 2-D / 4 × 2 | 2-D / 4 × 2 |
+| bf16 FPU | yes | yes | **no**: FPU instructions are no-ops |
+| Clock (Fmax) | 50 MHz (54.7) | 27 MHz (48.9) | 27 MHz (46.3) |
+| Logic used | 71% | 59% | 82% |
+| Host link | 2 Mbaud | 1 Mbaud | 1 Mbaud, from reset |
+| `DM16_BOARD` | `console138k` (default) | `nano20k` | `nano9k` |
+| Mandelbrot 80 × 40 | 24 ms | 104 ms | 94 ms |
+| Ray caster | ~40 frames/s | ~30 frames/s | ~45 frames/s |
+
+All three have 16-bit PEs with 8 registers and 1,024 words of memory each, run
+the same instruction set and pass the same tests (the 9K skips the
+floating-point ones). The Nano builds trade PEs for price: 8 PEs is enough to
+learn and try every part of the machine, and the ray caster still draws its 64
+columns, each PE tracing 8 of them in turn. (The 9K's frames come out a
+little faster than the 20K's: the same PEs and clock, but its USB bridge
+answers each request more quickly.)
+
+**Tang Nano 9K notes:**
+
+* **No reset button.** S1 is on pin 4, a dual-purpose configuration pin
+  (`JTAGSEL_N`) that doesn't work as an ordinary input, so the 9K build resets
+  itself at power-up. To reset it, reload the bitstream or power-cycle it.
+* **Its USB bridge (a BL702) doesn't handle changing baud rate while running**,
+  so the 9K build starts at 1 Mbaud and the host never switches rate. The host
+  also reopens the port once if the first connection after loading the FPGA
+  fails, which this bridge does.
+* **If a bitstream loads "successfully" but nothing runs** (LEDs off, no
+  serial replies), check the configuration status with
+  `openFPGALoader -b tangnano9k -v -m ...`. A 9K whose internal flash held a
+  broken image showed *CRC Error* and *Non-JTAG configuration is active*
+  before every load, and nothing loaded into SRAM ever started. Writing any
+  valid bitstream to its flash (`openFPGALoader -b tangnano9k -f ...`) fixed
+  it.
 
 ## Building and running
 
 **Requirements:** the Gowin EDA (V1.9.12.04 here, with a license),
-`openFPGALoader`, Python 3 with `pyserial`, and a Tang Console 138K.
+`openFPGALoader`, Python 3 with `pyserial`, and one of the boards above.
 
 ```sh
-./build.sh                                        # ~20 min -> impl/pnr/DM16.fs, timestamped build.log
-openFPGALoader -b tangconsole -m impl/pnr/DM16.fs # load into SRAM (flash untouched)
-python3 dm16_loader.py                            # memory, ALU, NEWS and network self-test
+./build.sh                    # Tang Console: ~20 min -> impl/pnr/DM16.fs, build.log
+./build.sh nano20k            # Tang Nano 20K: ~3 min -> build/nano20k/impl/pnr/DM16.fs
+./build.sh nano9k             # Tang Nano 9K: ~1 min  -> build/nano9k/impl/pnr/DM16.fs
+
+openFPGALoader -b tangconsole -m impl/pnr/DM16.fs               # load into SRAM
+openFPGALoader -b tangnano20k -m build/nano20k/impl/pnr/DM16.fs
+openFPGALoader -b tangnano9k  -m build/nano9k/impl/pnr/DM16.fs  # (-f writes flash instead)
+
+DM16_BOARD=nano20k python3 dm16_loader.py    # memory, ALU, NEWS and network self-test
 ```
 
-`build.sh` sets the environment the Gowin command-line tool needs on Linux and
-retries if the license server doesn't answer. The rules in `udev/` give the
-board's UART a stable name, `/dev/tang_console_uart`; set `DM16_PORT` to use
-another port and `DM16_BAUD` for another rate (up to 2 Mbaud, the bridge's
-reliable limit).
+`build.sh` sets the environment the Gowin command-line tool needs on Linux,
+timestamps every line of the build log, and retries if the license server
+doesn't answer.
+
+The host scripts pick the board's shape from `DM16_BOARD`, and every
+connection reads the configuration the bitstream reports (command `0x0B`) and
+stops with a clear message if it doesn't match: a Nano 20K run with the
+Console profile is told to use `DM16_BOARD=nano20k`. The serial port is found
+automatically when one board is plugged in; with several, set `DM16_PORT`,
+and load each with `openFPGALoader --ftdi-serial <serial>` (`openFPGALoader
+--scan-usb` lists them). The rules in `udev/` give the Tang Console's UART a
+stable name, `/dev/tang_console_uart`. `DM16_BAUD` picks another rate (up to
+2 Mbaud, the bridges' reliable limit).
 
 ### Tests and demos
 
@@ -416,7 +473,8 @@ reliable limit).
 
 | File | Contents |
 |---|---|
-| `src/dm16_top.v` | board top: PLL, reset, UART pins, LEDs |
+| `src/dm16_top.v` | Tang Console top: PLL, reset, UART pins, LEDs, machine parameters |
+| `src/boards/` | Tang Nano 20K and 9K tops, pin constraints and clock constraint |
 | `src/dm16_core.v` | sequencer, clusters, NEWS wiring, routers, global OR |
 | `src/dm16_uart_seq.v` | UART, host commands, program memory, sequencer |
 | `src/dm16_cluster.v` | 4 PEs, their memories, network arbiter and mailboxes |
@@ -445,9 +503,20 @@ On the GW5AST-138:
 
 | Resource | Used |
 |---|---|
-| Logic (LUTs + ALUs) | 97,430 / 138,240 (71%) |
-| Logic slices (CLS) | 59,012 / 69,120 (86%) |
-| Flip-flops | 31,554 / 139,095 (23%) |
+| Logic (LUTs + ALUs) | 97,535 / 138,240 (71%) |
+| Logic slices (CLS) | 58,951 / 69,120 (86%) |
+| Flip-flops | 31,568 / 139,095 (23%) |
 | Block RAM | 70 / 340 (21%): 64 PE memories + program memory |
 | DSP | 96 / 298 (33%) |
-| Fmax | 64.7 MHz, run at 50 MHz |
+| Fmax | 54.7 MHz, run at 50 MHz (the slowest path is the network injection handshake) |
+
+## Known issues
+
+* **A rare wrong result on the Tang Console, not yet explained.** Twice, in
+  long runs of `dm16_mandelbrot.py --check`, a few pixels (4 in one image, 3
+  across two zoom frames) came back with a lower iteration count than the
+  model's; the ones traced came from PEs 60 and 61, in the same cluster. About
+  1,500 checked frames and several thousand other checks since then have all
+  been correct, so the cause (a marginal path in this build's placement, or
+  corruption on the USB link) is unknown. Run with `--check` if you need
+  certainty, and please report a reproducible case.

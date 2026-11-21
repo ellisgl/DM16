@@ -5,13 +5,18 @@
 // Packet: {valid, 1'b0, dest[5:0], data[W-1:0]}
 //   dest = {cluster, lane}; the lane is dest[LANE_BITS-1:0] (bits W +: LANE_BITS).
 //
-// Memory: GOWIN_SP = 1 uses W/16 Gowin SP block RAMs per PE (the Tang build);
-// GOWIN_SP = 0 infers a plain synchronous RAM for other FPGA families.
+// Memory: 2^MEM_AW words per PE. GOWIN_SP = 1 uses Gowin SP block RAMs
+// (W/16 wide x 2^(MEM_AW-10) banks; MEM_AW <= 13, since the SP's block select
+// is 3 bits); GOWIN_SP = 0 infers a plain synchronous RAM for other families.
 module dm16_cluster #(
     parameter integer LANES    = 2,      // PEs in this cluster (2 or 4)
     parameter [5:0]   BASE_ID  = 6'd0,   // PE_ID of lane 0 (cluster * LANES)
     parameter integer W        = 16,     // PE data width
     parameter integer GOWIN_SP = 1,
+    parameter integer NREGS    = 8,      // PE registers (see dm16_pe)
+    parameter         RF_BRAM  = 1'b0,
+    parameter integer MEM_AW   = 10,     // PE memory = 2^MEM_AW words
+    parameter         HAS_FPU  = 1'b1,   // bf16 lanes in every PE
     parameter integer PKT_W    = W + 8   // derived: do not override
 )(
     input  wire                 clk,
@@ -40,6 +45,20 @@ module dm16_cluster #(
 );
 
     localparam integer LANE_BITS = (LANES <= 2) ? 1 : 2;
+
+    // Gowin SP banking: 1024 words per SP, up to 8 banks
+    localparam integer LOW_AW    = (MEM_AW < 10) ? MEM_AW : 10;
+    localparam integer NBANK     = (MEM_AW > 10) ? (1 << (MEM_AW - 10)) : 1;
+    localparam integer BANK_BITS = (MEM_AW > 10) ? (MEM_AW - 10) : 1;
+
+    // The SP's 10-bit word address: the low address bits, zero-padded
+    function [9:0] word_addr;
+        input [MEM_AW-1:0] a;
+        begin
+            word_addr = 10'd0;
+            word_addr[LOW_AW-1:0] = a[LOW_AW-1:0];
+        end
+    endfunction
 
     // Instruction broadcast pipeline: one copy per cluster, then one per PE.
     // Every PE sees the sequencer's instruction two clocks later; since
@@ -98,12 +117,12 @@ module dm16_cluster #(
             tx_ready[k] = rt_in_ready && ((tx_valid & ((1 << k) - 1)) == 0);
     end
 
-    wire [10*LANES-1:0] mem_addr;
+    wire [MEM_AW*LANES-1:0] mem_addr;
     wire [W*LANES-1:0]  mem_wdata;
     wire [LANES-1:0]    mem_we;
     wire [W*LANES-1:0]  mem_rdata;
 
-    genvar i, j;
+    genvar i, j, k2;
     generate
         for (i = 0; i < LANES; i = i + 1) begin : gen_pe
             (* syn_preserve = 1 *) reg [23:0] instr_pe;
@@ -119,15 +138,19 @@ module dm16_cluster #(
             end
 
             dm16_pe #(
-                .PE_ID (BASE_ID + i),
-                .W     (W)
+                .PE_ID   (BASE_ID + i),
+                .W       (W),
+                .NREGS   (NREGS),
+                .RF_BRAM (RF_BRAM),
+                .MEM_AW  (MEM_AW),
+                .HAS_FPU (HAS_FPU)
             ) u_pe (
                 .clk          (clk),
                 .rst_n        (rst_n),
                 .instr        (instr_pe),
                 .instr_valid  (instr_valid_pe),
                 .instr_next   (instr_q),          // what instr_pe holds next clock
-                .mem_addr     (mem_addr[i*10 +: 10]),
+                .mem_addr     (mem_addr[i*MEM_AW +: MEM_AW]),
                 .mem_wdata    (mem_wdata[i*W +: W]),
                 .mem_we       (mem_we[i]),
                 .mem_rdata    (mem_rdata[i*W +: W]),
@@ -147,38 +170,55 @@ module dm16_cluster #(
             );
 
             if (GOWIN_SP) begin : g_gowin_mem
-                // W/16 single-port BSRAMs side by side, 16-bit mode:
-                // AD[13:4] = word, AD[1:0] = byte enables
+                // Gowin SP block RAMs in 16-bit mode (1024 words each):
+                // W/16 side by side for the width and NBANK = 2^(MEM_AW-10)
+                // banks for the depth, chosen by the SP's own block-select
+                // input (BLKSEL vs BLK_SEL), so WRE stays the PE's clean
+                // flip-flop signal. AD[13:4] = word, AD[1:0] = byte enables.
+                // The read data is picked by the bank of the previous clock's
+                // address, matching the RAM's one-clock read.
+                reg  [BANK_BITS-1:0] bank_q;
+                wire [BANK_BITS-1:0] bank;
+                if (MEM_AW > 10) begin : g_banked
+                    assign bank = mem_addr[i*MEM_AW + 10 +: BANK_BITS];
+                end else begin : g_one_bank
+                    assign bank = {BANK_BITS{1'b0}};
+                end
+                always @(posedge clk) bank_q <= bank;
                 for (j = 0; j < W / 16; j = j + 1) begin : g_slice
-                    wire [31:0] do_full;
-                    assign mem_rdata[i*W + j*16 +: 16] = do_full[15:0];
-
-                    SP #(
-                        .READ_MODE  (1'b0),
-                        .WRITE_MODE (2'b00),
-                        .BIT_WIDTH  (16),
-                        .BLK_SEL    (3'b000),
-                        .RESET_MODE ("SYNC")
-                    ) u_sp (
-                        .DO     (do_full),
-                        .DI     ({16'd0, mem_wdata[i*W + j*16 +: 16]}),
-                        .BLKSEL (3'b000),
-                        .AD     ({mem_addr[i*10 +: 10], 2'b00, 2'b11}),
-                        .WRE    (mem_we[i]),
-                        .CLK    (clk),
-                        .CE     (1'b1),
-                        .OCE    (1'b1),
-                        .RESET  (~rst_n)
-                    );
+                    wire [16*NBANK-1:0] do_bank;
+                    assign mem_rdata[i*W + j*16 +: 16] = do_bank[bank_q*16 +: 16];
+                    for (k2 = 0; k2 < NBANK; k2 = k2 + 1) begin : g_bank
+                        localparam [2:0] BANK_ID = k2;
+                        wire [31:0] do_full;
+                        assign do_bank[k2*16 +: 16] = do_full[15:0];
+                        SP #(
+                            .READ_MODE  (1'b0),
+                            .WRITE_MODE (2'b00),
+                            .BIT_WIDTH  (16),
+                            .BLK_SEL    (BANK_ID),
+                            .RESET_MODE ("SYNC")
+                        ) u_sp (
+                            .DO     (do_full),
+                            .DI     ({16'd0, mem_wdata[i*W + j*16 +: 16]}),
+                            .BLKSEL ((NBANK == 1) ? 3'b000 : {{(3-BANK_BITS){1'b0}}, bank}),
+                            .AD     ({word_addr(mem_addr[i*MEM_AW +: MEM_AW]), 2'b00, 2'b11}),
+                            .WRE    (mem_we[i]),
+                            .CLK    (clk),
+                            .CE     (1'b1),
+                            .OCE    (1'b1),
+                            .RESET  (~rst_n)
+                        );
+                    end
                 end
             end else begin : g_infer_mem
                 // Plain synchronous single-port RAM, read-first
-                reg [W-1:0] ram [0:1023];
+                reg [W-1:0] ram [0:(1 << MEM_AW) - 1];
                 reg [W-1:0] rd_q;
                 always @(posedge clk) begin
                     if (mem_we[i])
-                        ram[mem_addr[i*10 +: 10]] <= mem_wdata[i*W +: W];
-                    rd_q <= ram[mem_addr[i*10 +: 10]];
+                        ram[mem_addr[i*MEM_AW +: MEM_AW]] <= mem_wdata[i*W +: W];
+                    rd_q <= ram[mem_addr[i*MEM_AW +: MEM_AW]];
                 end
                 assign mem_rdata[i*W +: W] = rd_q;
             end

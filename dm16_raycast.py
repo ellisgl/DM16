@@ -1,5 +1,8 @@
 """
-Wolfenstein-style ray caster on DM16: 64 screen columns, one ray per PE.
+Wolfenstein-style ray caster on DM16: 64 screen columns, one ray per PE at a
+time. On the Tang Console's 64 PEs that is one pass per frame; on smaller
+builds each PE traces 64 / NUM_PE columns, one pass after another, in a
+hardware LOOP (8 passes on the Nano 20K, 16 on the Nano 9K).
 
 Every PE holds the same 16 x 16 map in its memory (one word per cell, 0 =
 empty, 1-4 = wall type). Each frame the host sends the player's position,
@@ -13,9 +16,9 @@ hits, and BANY loops until every ray has hit something. Because the ray is
 built on the camera plane, the number of steps is already the perpendicular
 distance to the wall, so there is no fisheye correction and no division.
 
-Positions are unsigned Q4.12 (the top 4 bits are the map cell). Each PE
-returns one word: wall type << 10 | side << 9 | steps, read with a single
-ACC dump.
+Positions are unsigned Q4.12 (the top 4 bits are the map cell). Each ray
+gives one word, wall type << 10 | side << 9 | steps; a frame's words are
+read back with one bulk read.
 
   python3 dm16_raycast.py               # walk around: W/S or arrows, A/D turn, Q quits
   python3 dm16_raycast.py --demo        # autopilot tour (also used when not on a terminal)
@@ -32,10 +35,10 @@ from dm16_host import (
     DEFAULT_PORT, open_dm16, NUM_PE,
     ALU_ADD, ALU_SUB, ALU_AND, ALU_OR, ALU_XOR, ALU_MOV, ALU_MUL, ALU_MULH,
     ALU_SHLN, ALU_SHRN, ALU_ASRN,
-    SRC_R, SRC_IMM, SRC_ID, CTX_ALWAYS, CTX_IF_N, CTX_IF_Z, CTX_INVERT,
-    OP_LDI, OP_MAR, OP_LDX, BANY, LABEL,
+    SRC_R, SRC_IMM, SRC_ID, SRC_MEM, CTX_ALWAYS, CTX_IF_N, CTX_IF_Z, CTX_INVERT,
+    OP_LDI, OP_MAR, OP_LDX, OP_STX, BANY, LABEL, LOOP, ENDL,
     alu, ctx, ldm, stm, put, get, encode_instr, ldi16,
-    read_acc_grid, upload_and_run,
+    read_mem_block, upload_and_run,
 )
 
 FRAC = 12                   # Q4.12
@@ -43,7 +46,10 @@ ONE = 1 << FRAC
 STEP_SHIFT = 4              # a march step is 1/16 of the ray direction
 MAX_STEPS = 400             # beyond any wall in a 16 x 16 map
 FOV_PLANE = 0.66            # camera plane length: ~66 degree field of view
-CELL = 0x300                # per-PE word: the cell the ray is in
+SCREEN = 64                 # screen columns (rays) per frame
+PASSES = SCREEN // NUM_PE   # rays each PE traces per frame
+CELL, CAM, CAM_STEP, PTR = 0x300, 0x301, 0x302, 0x303   # per-PE working words
+RES = 0x310                 # one result word per pass
 
 MAP = [
     "1111111111111111",
@@ -82,10 +88,15 @@ def map_program():
 def frame_program(pos, direction, plane, max_steps=MAX_STEPS):
     a = lambda op, n: alu(op, SRC_R, n)                 # acc = acc OP r[n]
     i = lambda op, v: alu(op, SRC_IMM, v & 0x3FF)       # acc = acc OP imm
-    # camX for PE c, at the centre of its column: (2c + 1) / 64 - 1 = c/32 - 63/64
-    cam0 = -ONE + ONE // NUM_PE
+    # camX at the centre of screen column c: (2c + 1) / 64 - 1, i.e. cam0 + c * 128
+    # in Q4.12. In pass k, PE p traces column c = k * NUM_PE + p.
+    cam0 = -ONE + ONE // SCREEN
     p = [ctx(CTX_ALWAYS),
-         *ldi16(cam0), put(7), alu(ALU_MOV, SRC_ID), i(ALU_SHLN, 7), a(ALU_ADD, 7), put(7)]
+         *ldi16(cam0), put(7), alu(ALU_MOV, SRC_ID), i(ALU_SHLN, 7), a(ALU_ADD, 7), stm(CAM),
+         *ldi16(NUM_PE << 7), stm(CAM_STEP),
+         *ldi16(RES), stm(PTR),
+         LOOP(PASSES),
+         ldm(CAM), put(7)]
     for d, pl, reg in ((direction[0], plane[0], 3), (direction[1], plane[1], 4)):
         p += [*ldi16(q(pl)), put(6),
               get(7), a(ALU_MULH, 6), put(0),           # b = high half of camX * plane
@@ -119,8 +130,20 @@ def frame_program(pos, direction, plane, max_steps=MAX_STEPS):
           i(ALU_ADD, 15), i(ALU_SHRN, 4),               # 0 if equal, else 1
           i(ALU_SHLN, 9), put(6),
           get(5), i(ALU_AND, 511), a(ALU_OR, 6), put(6),
-          ldm(CELL), i(ALU_SHLN, 10), a(ALU_OR, 6)]     # acc = type << 10 | side << 9 | steps
+          ldm(CELL), i(ALU_SHLN, 10), a(ALU_OR, 6),     # type << 10 | side << 9 | steps
+          put(6),                                       # store it at RES + pass (mar was
+          ldm(PTR), encode_instr(OP_MAR), get(6),       # busy with map lookups, so the
+          encode_instr(OP_STX),                         # pointer lives in memory)
+          ldm(PTR), i(ALU_ADD, 1), stm(PTR),
+          ldm(CAM), alu(ALU_ADD, SRC_MEM, CAM_STEP), stm(CAM),   # next pass: NUM_PE columns on
+          ENDL]
     return p
+
+
+def read_frame(ser):
+    """The frame's SCREEN result words, in screen-column order."""
+    passes = read_mem_block(ser, RES, PASSES)
+    return [passes[c // NUM_PE][c % NUM_PE] for c in range(SCREEN)]
 
 
 # ------------------------------------------------------------------------------
@@ -131,9 +154,9 @@ def _s16(v):
     return v - 0x10000 if v & 0x8000 else v
 
 
-def model_column(pe, pos, direction, plane, max_steps=MAX_STEPS):
+def model_column(col, pos, direction, plane, max_steps=MAX_STEPS):
     M = 0xFFFF
-    cam = ((-ONE + ONE // NUM_PE) + (pe << 7)) & M     # as on the PE: cam0 + PE_ID << 7
+    cam = ((-ONE + ONE // SCREEN) + (col << 7)) & M    # as on the PE: cam0 + column * 128
     steps = []
     for d, pl in ((direction[0], plane[0]), (direction[1], plane[1])):
         qp = q(pl)
@@ -302,15 +325,16 @@ def main():
                 plane = (-math.sin(angle) * FOV_PLANE, math.cos(angle) * FOV_PLANE)
                 t0 = time.monotonic()
                 upload_and_run(ser, frame_program(pos, direction, plane))
-                words = read_acc_grid(ser)
+                words = read_frame(ser)
                 board_ms = (time.monotonic() - t0) * 1000
                 frames += 1
 
                 if args.check:
-                    exp = [model_column(pe, pos, direction, plane) for pe in range(NUM_PE)]
+                    exp = [model_column(c, pos, direction, plane) for c in range(SCREEN)]
                     bad += sum(g != e for g, e in zip(words, exp))
 
-                status = (f"DM16 ray caster: 64 rays, one per PE   board {board_ms:4.0f} ms/frame   "
+                rays = f"{SCREEN} rays, one per PE" if PASSES == 1 else f"{SCREEN} rays: {NUM_PE} PEs x {PASSES} passes"
+                status = (f"DM16 ray caster: {rays}   board {board_ms:4.0f} ms/frame   "
                           f"{frames / (time.monotonic() - t_start):4.1f} fps")
                 if args.check:
                     status += f"   check: {'ALL PASS' if not bad else f'{bad} columns differ'}"
@@ -328,7 +352,7 @@ def main():
                 import termios
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_tty)
     if args.check:
-        print(f"\n{frames} frames, {frames * NUM_PE} columns checked: "
+        print(f"\n{frames} frames, {frames * SCREEN} columns checked: "
               f"{'ALL PASS' if not bad else f'{bad} differ'}")
     return 1 if bad else 0
 

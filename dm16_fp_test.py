@@ -17,7 +17,7 @@ import serial
 
 import dm16_bf16_ref as ref
 from dm16_host import (
-    DEFAULT_PORT, open_dm16,
+    DEFAULT_PORT, open_dm16, HAS_FPU, BOARD,
     NUM_PE,
     ALU_ASR, ALU_MOV, ALU_MUL, ALU_SUB, SRC_ID, SRC_IMM, SRC_MEM, MEM_MAR, MEM_INC,
     CTX_ALWAYS, CTX_IF_N,
@@ -51,6 +51,9 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--show", action="store_true", help="print value grids")
     args = ap.parse_args()
+    if not HAS_FPU:
+        print(f"SKIPPED: the {BOARD} build has no FPU (FPU instructions are no-ops)")
+        return 0
     rng = random.Random(args.seed)
 
     a = [random_bf16(rng) for _ in range(NUM_PE)]

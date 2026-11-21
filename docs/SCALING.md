@@ -13,12 +13,17 @@ already a parameter, what it costs, and what would have to change.
 | `DIMS` | `dm16_core` | 4 | hypercube dimensions between clusters: 2^`DIMS` clusters |
 | `LANES` | `dm16_core` | 4 | PEs per cluster (2 or 4) |
 | `COLS` | `dm16_core` | 8 | width of the NEWS torus; rows = PEs / `COLS` |
+| `NREGS` | `dm16_core` | 8 | registers `r0`–`r[NREGS-1]` per PE (`r0` is `b`): a power of two, 2–1,024 |
+| `RF_BRAM` | `dm16_core` | 0 | registers in flip-flops (0) or in a block RAM (1) |
+| `MEM_AW` | `dm16_core` | 10 | PE memory = 2^`MEM_AW` words (1,024 on the Tang) |
 | `GOWIN_SP` | `dm16_core` | 1 | PE memories from Gowin `SP` block RAMs (1) or inferred RAM (0, for any other FPGA) |
-| `HAS_RF` | `dm16_pe` | 1 | registers `r1`–`r7`; without them every `r[n]` is `b` |
+| `HAS_RF` | `dm16_pe` | 1 | registers `r1` and up; without them every `r[n]` is `b` |
 
-PEs = 2^`DIMS` × `LANES`. The host library has matching constants (`DIMS`,
-`LANES`, `COLS`, `WORD_BITS` in `dm16_host.py`), which must agree with the
-bitstream.
+PEs = 2^`DIMS` × `LANES`. The Tang build sets all of these in `dm16_top.v`.
+The host library has matching constants (`DIMS`, `LANES`, `COLS`,
+`WORD_BITS`, `NUM_REGS`, `MEM_WORDS` in `dm16_host.py`), which **must agree
+with the bitstream**: nothing checks this at run time, and a mismatch shows
+up as wrong results, not an error.
 
 ## Measured costs
 
@@ -47,7 +52,10 @@ Shared logic is small by comparison:
 On the Tang Console itself (Gowin GW5AST-138, measured by the Gowin tools),
 the whole 64 × 16-bit machine uses 71% of the logic, 86% of the logic slices,
 23% of the flip-flops, 21% of the block RAM and 33% of the DSPs, with Fmax
-64.7 MHz.
+54.7 MHz (between 54.7 and 64.7 MHz across today's builds of much the same
+design; the slowest path is in the network, not the PEs). The Tang Nano 20K
+(8 PEs with FPUs) uses 59% of its GW2AR-18 at 48.9 MHz, and the Nano 9K (8
+integer-only PEs) 82% of its GW1NR-9 at 46.3 MHz.
 
 ## Data width (`W`)
 
@@ -186,13 +194,117 @@ broadcast and sequencer (AMD figures from memory; check the datasheets):
 | 1,024 × 32 bits | ~2.3 M | AMD VU19P class, or several boards |
 | 256 × 256 bits | ~2–2.6 M ALMs, multi-cycle multiply | Intel Stratix 10 GX 10M class |
 
-## Memory per PE
+## Registers (`NREGS`, `RF_BRAM`)
 
-Each PE has 1,024 words: `mar` and the 10-bit immediate address are both
-10 bits. Deeper memory needs a wider `mar` (and wider `MAR`/post-increment),
-with direct addressing either limited to the first 1,024 words or extended by
-a page register. On AMD UltraScale+, one UltraRAM block (4K × 72) per PE gives
-4,096 × 64-bit words (32 KB) cheaply; on Intel, M20K blocks in parallel.
+Every PE has registers `r0`–`r[NREGS-1]`, where `r0` is the `b` register.
+`NREGS` is a power of two from 2 to 1,024; the Tang build has 8. A register
+is named by the instruction's 10-bit immediate field, so the instruction
+format already allows 1,024, and programs written for fewer registers run
+unchanged on a build with more.
+
+There are two ways to build them:
+
+* **Flip-flops** (`RF_BRAM = 0`, the default): an `NREGS`-way select in front
+  of operand B. On AMD and Intel parts, synthesis puts these in distributed
+  (LUT) RAM, so 32 registers cost the same as 8. On the Tang's Gowin chip,
+  which has no distributed RAM, each register is `W` flip-flops plus select
+  logic, so this suits small register files.
+* **Block RAM** (`RF_BRAM = 1`): `r1` and up live in one block RAM per PE
+  (two or more for very wide `W`). This is cheap in logic for any size up to
+  1,024. It works without extra clocks because the PE reads operand B one
+  clock early, from the copy of the next instruction on `instr_next`, which
+  is exactly when a block RAM needs its address.
+
+Measured per PE with Yosys for AMD UltraScale+ (`synth_xilinx -family xcup`):
+
+| `W` | `NREGS` | Style | LUTs | Flip-flops | RAM |
+|---|---|---|---|---|---|
+| 16 | 8 | flip-flops | 984 | 300 | 2 LUTRAM cells |
+| 16 | 32 | flip-flops | 978 | 300 | 2 LUTRAM cells |
+| 64 | 8 | flip-flops | 4,248 | 984 | 5 LUTRAM cells |
+| 64 | 32 | flip-flops | 4,232 | 984 | 5 LUTRAM cells |
+| 64 | 256 | block RAM | 4,222 | 1,123 | 1 block RAM |
+
+On the Tang Console (Gowin GW5AST-138, 64 PEs × 16 bits), measured by the
+Gowin tools with 32 registers in block RAM and 4,096 words of memory per PE,
+against the shipped 8 registers and 1,024 words:
+
+| | 8 registers, 1 K words (shipped) | 32 registers (block RAM), 4 K words |
+|---|---|---|
+| Logic | 71% | 73% |
+| Logic slices | 86% | 85% |
+| Flip-flops | 31,554 (23%) | 27,296 (20%) |
+| Block RAM | 70 / 340 | 326 / 340 (96%) |
+| Fmax (50 MHz target) | 54.7 MHz | 54.1 MHz |
+
+The larger configuration fits and meets timing; its slowest path is in the
+hypercube router, not the register file. It does use almost all the block
+RAM: 256 blocks of PE memory, 64 register files and 6 for the program.
+
+**Caveats**
+
+* **Register numbers wrap.** The hardware uses the register number modulo
+  `NREGS`, so a program written for 32 registers that runs on an 8-register
+  build silently uses `r[n mod 8]`. The host library's helpers (`put`, `get`,
+  `swp`, `alu(..., SRC_R, n)`) raise an error for registers that don't exist
+  in the build `NUM_REGS` describes, but hand-encoded instructions are not
+  checked.
+* **The block RAM's write is registered.** Gowin's block RAMs make spurious
+  writes when their write enable glitches, so the register file's write
+  enable comes from a flip-flop, and the write lands in the idle clock after
+  `SWP`/`PUT`. That is the same edge at which the next instruction reads its
+  operand, so a write and read of the same register on that edge are
+  bypassed. Like the rest of the PE, this relies on the sequencer leaving an
+  idle clock after every instruction.
+* **The block RAM's output goes straight into the ALU.** With flip-flops,
+  operand B comes from a register; with block RAM it comes from the RAM's
+  output, which is slower, so expect a lower Fmax (measured above).
+* **Gowin needs telling to use block RAM.** Without a
+  `syn_ramstyle = "block_ram"` attribute (which `dm16_pe.v` sets), Gowin's
+  synthesis builds a 32-entry register file from flip-flops: a first trial
+  build used 61 k flip-flops and 98% of the logic slices instead of 27 k and
+  85%. If you move the register file, keep the attribute, and check the
+  block RAM count in the report.
+* **Registers have no reset.** Their contents are undefined until written.
+
+## Memory per PE (`MEM_AW`)
+
+Each PE has 2^`MEM_AW` words; the Tang build has 1,024 (`MEM_AW` = 10).
+`mar` is `MEM_AW` bits wide, so `MAR`, `LDX`/`STX` and post-increment reach
+the whole memory.
+
+**Caveats**
+
+* **Immediate addresses reach only the first 1,024 words.** `LDM`/`STM` and
+  memory operands take a 10-bit immediate address. Above 1,024, set `mar`
+  (`MAR` from `acc`) and use `LDX`/`STX` or the `MEM_MAR` addressing flag.
+  The host's `ldm`, `stm`, `alu` and `fpu` helpers raise an error for an
+  immediate address above 1,023 instead of letting it wrap.
+  A base-plus-offset addressing mode would remove this limit; it is not
+  implemented.
+* **`MAR` loads from `acc`, so `MEM_AW` ≤ `W`.** At 16 bits that allows up
+  to 64 K words.
+* **`mar` wraps** at 2^`MEM_AW`; with `MEM_AW` < 10, an immediate address
+  uses its low `MEM_AW` bits.
+* **Host reads and writes above 1 K change `mar`.** The bulk-read command
+  (`0x0A`, `read_mem_block`) reads the first 1,024 words with `LDM`, leaving
+  `mar` alone; a read that reaches past them sets `mar` and uses `LDX` with
+  post-increment, so afterwards `mar` points just past the last word read.
+  `write_words` above 1 K likewise leaves `mar` at the written address.
+  Programs should set `mar` themselves rather than rely on its value from
+  before a host access. (Both commands always clobber `acc` and enable every
+  PE.)
+* **Gowin banks.** With `GOWIN_SP` = 1, each 1,024 words is one Gowin `SP`
+  block per 16 bits of width, and deeper memories are banked using the `SP`'s
+  own block-select input (so the write enable stays a clean flip-flop
+  signal). The block select is 3 bits, so `MEM_AW` ≤ 13 (8 K words) with
+  Gowin RAMs; use `GOWIN_SP` = 0 for more.
+* **Block RAM budget.** The Tang has 340 block RAMs; 6 hold the program and
+  each 1 K × 16 of PE memory takes one. 64 PEs × 4 K words is 256 blocks,
+  which fits; 8 K words per PE would not.
+
+On AMD UltraScale+, one UltraRAM block (4K × 72) per PE gives 4,096 × 64-bit
+words (32 KB) cheaply; on Intel, M20K blocks in parallel.
 
 ## Chip-to-chip
 

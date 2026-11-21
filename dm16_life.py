@@ -1,5 +1,7 @@
 """
-Conway's Game of Life on the DM16 8x8 NEWS torus (one cell per PE).
+Conway's Game of Life on the DM16 NEWS torus (one cell per PE: 8 x 8 on the
+Tang Console, 4 x 2 on the Nano 20K, 2 x 2 on the Nano 9K). Every generation
+is checked against a Python Life on the same torus.
 """
 import serial
 import struct
@@ -11,7 +13,7 @@ from dm16_host import (
     ROWS, COLS, NUM_PE,
     OP_ALU, OP_LDI, OP_LDM, OP_NEWS, OP_SET_CTX, OP_STM, OP_SWP,
     ALU_ADD, ALU_SUB, ALU_MOV, NEWS_N, NEWS_E, NEWS_W, NEWS_S,
-    encode_instr, inject_instr, read_mem_grid,
+    encode_instr, inject_instr, read_mem_grid, wait_idle,
 )
 
 # Memory Map inside each PE's 1 KB BRAM:
@@ -123,11 +125,27 @@ def render_grid(gen, grid):
         line = " ".join("██" if grid[r * COLS + c] else "··" for c in range(COLS))
         print(f"  {line}")
 
+def life_step(grid):
+    """One generation on a ROWS x COLS torus. Wrapping neighbours are counted
+    as often as they occur, as the NEWS moves do (on a 2-row torus the cell
+    above is also the cell below)."""
+    nxt = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            n = sum(grid[((r + dr) % ROWS) * COLS + (c + dc) % COLS]
+                    for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr or dc)
+            alive = grid[r * COLS + c]
+            nxt.append(1 if n == 3 or (alive and n == 2) else 0)
+    return nxt
+
+
 def main(port=None, generations=40, delay=0.15):
     prog = build_life_generation_program()
 
-    # Classic glider (period 4, travels diagonally around the 8x8 torus)
+    # Classic glider (period 4, travels diagonally around the 8x8 torus; on
+    # the smaller tori it wraps onto itself, which is still Life)
     pattern = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
+    expect, bad = None, 0
 
     port = port or DEFAULT_PORT
     with open_dm16(port) as ser:
@@ -141,12 +159,21 @@ def main(port=None, generations=40, delay=0.15):
         for gen in range(generations + 1):
             grid = read_mem_grid(ser, MEM_STATE)
             render_grid(gen, grid)
+            if expect is not None and grid != expect:
+                bad += 1
+                print(f"  generation {gen} differs from the Python Life")
+            expect = life_step(grid)
             time.sleep(delay)
 
             # Reset PC to 0 and run 1 generation across all PEs
             ser.write(b"\x04")
             ser.write(struct.pack(">BH", 0x02, len(prog)))
-            time.sleep(0.005)
+            time.sleep(0.002)
+            wait_idle(ser)
+
+    print(f"\n{generations} generations: {'ALL PASS' if not bad else f'{bad} differ (FAIL)'}")
+    return 1 if bad else 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

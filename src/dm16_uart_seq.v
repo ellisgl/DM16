@@ -4,7 +4,15 @@ module dm16_uart_seq #(
     parameter integer CLK_HZ = 54_000_000,
     parameter integer BAUD   = 115_200,
     parameter integer NUM_PE = 8,
-    parameter integer W      = 16      // PE data width (ACC dumps send W/8 bytes per PE)
+    parameter integer W      = 16,     // PE data width (ACC dumps send W/8 bytes per PE)
+    // The rest only describe the array, for the configuration readback (0x0B)
+    parameter integer DIMS    = 4,
+    parameter integer LANES   = 4,
+    parameter integer COLS    = 8,
+    parameter integer NREGS   = 8,
+    parameter integer MEM_AW  = 10,
+    parameter         HAS_FPU = 1'b1,
+    parameter         RF_BRAM = 1'b0
 )(
     input  wire         clk,
     input  wire         rst_n,
@@ -138,15 +146,24 @@ module dm16_uart_seq #(
     //   0x02 e_hi e_lo            run from 0 until pc == e (or HALT)
     //   0x03                      single step
     //   0x04                      halt, pc = 0
-    //   0x05                      read the context mask (NUM_PE/8 bytes)
+    //   0x05                      read the context mask (ceil(NUM_PE/8) bytes)
     //   0x06 i2 i1 i0             execute one instruction immediately
     //   0x07                      read every PE's ACC (W/8 * NUM_PE bytes)
     //   0x08 d_hi d_lo            set UART clocks per bit
     //   0x09                      read status byte {6'b0, any_active, running}
+    //   0x0B                      read the configuration: 12 bytes
+    //                             'D', 16 (format), W, DIMS, LANES, COLS,
+    //                             log2(NREGS), MEM_AW, flags {RF_BRAM, HAS_FPU},
+    //                             CLK_HZ / 1000 as 24 bits little-endian
     //   0x0A a_hi a_lo n_hi n_lo  bulk read: n words from address a of every PE
-    //                             (enables all PEs, then for each word injects
-    //                             LDM and streams the ACC dump: n * W/8 * NUM_PE
-    //                             bytes; clobbers ACC; the program must be idle)
+    //                             (enables all PEs, then for each word loads it
+    //                             into ACC and streams the ACC dump: n * W/8 *
+    //                             NUM_PE bytes; the program must be idle).
+    //                             Within the first 1024 words it injects LDM a+k
+    //                             and clobbers only ACC. Beyond them, where an
+    //                             immediate address can't reach, it sets mar = a
+    //                             (via LDI hi/lo and MAR) and injects LDX with
+    //                             post-increment, so it clobbers ACC and MAR.
     localparam integer PC_W = 12;
     reg [23:0]     imem [0:(1 << PC_W) - 1];
     reg [PC_W-1:0] pc;
@@ -156,18 +173,51 @@ module dm16_uart_seq #(
     reg [PC_W-1:0] wr_addr;
     reg [23:0] wr_data;
     localparam integer ACC_BYTES = NUM_PE * W / 8;
+    localparam integer CTX_BYTES = (NUM_PE + 7) / 8;
+    // Zero-padded to whole bytes. The "+ 1" keeps the replication count
+    // non-zero (illegal in Verilog-2001) when NUM_PE is a multiple of 8; the
+    // extra top bit is dropped by the assignment.
+    wire [CTX_BYTES*8-1:0] ctx_padded = {{(CTX_BYTES*8 - NUM_PE + 1){1'b0}}, all_ctx};
+
+    // Configuration readback (0x0B)
+    function integer log2i;
+        input integer v;
+        integer t;
+        begin
+            log2i = 0;
+            for (t = v; t > 1; t = t >> 1) log2i = log2i + 1;
+        end
+    endfunction
+    localparam [23:0] CFG_KHZ   = CLK_HZ / 1000;
+    localparam [7:0]  CFG_W     = W;
+    localparam [7:0]  CFG_DIMS  = DIMS;
+    localparam [7:0]  CFG_LANES = LANES;
+    localparam [7:0]  CFG_COLS  = COLS;
+    localparam [7:0]  CFG_RBITS = log2i(NREGS);
+    localparam [7:0]  CFG_AW    = MEM_AW;
+    localparam [7:0]  CFG_FLAGS = (RF_BRAM ? 8'd2 : 8'd0) | (HAS_FPU ? 8'd1 : 8'd0);
+    localparam [95:0] CFG_BYTES = {
+        CFG_KHZ, CFG_FLAGS, CFG_AW, CFG_RBITS, CFG_COLS, CFG_LANES, CFG_DIMS, CFG_W,
+        8'd16, 8'h44 };                    // byte 0 = 'D' (sent first)
     reg [15:0] dump_idx;
 
     reg [23:0] inj_instr;
     reg        inj_valid;
     reg        inj_active;
 
-    // Bulk read (0x0A)
+    // Bulk read (0x0A): instructions it injects
     localparam [23:0] I_CTX_ALWAYS = 24'h900000;
-    localparam [23:0] I_LDM        = 24'h200000;    // | address
-    reg [9:0]  br_addr;
-    reg [10:0] br_left;
-    reg        br_ctx_done;
+    localparam [23:0] I_LDI_0      = 24'h100000;    // acc = 0
+    localparam [23:0] I_LDI_HI     = 24'h110000;    // | byte: acc[15:8] = byte
+    localparam [23:0] I_LDI_LO     = 24'h120000;    // | byte: acc[7:0]  = byte
+    localparam [23:0] I_MAR_ACC    = 24'h600000;    // mar = acc
+    localparam [23:0] I_LDX_INC    = 24'h400800;    // acc = mem[mar++]
+    localparam [23:0] I_LDM        = 24'h200000;    // | address: acc = mem[address]
+    // Phases: 0 CTX ALWAYS; 1-4 set mar (only when br_mar); 5 one word each
+    reg [15:0] br_addr;
+    reg [15:0] br_left;
+    reg [2:0]  br_phase;
+    reg        br_mar;
     reg [5:0]  br_wait;
 
     // A multi-byte command that stalls for 2^17 clocks (2.6 ms at 50 MHz)
@@ -194,7 +244,8 @@ module dm16_uart_seq #(
             cmd_idle    <= 0;
             br_addr     <= 0;
             br_left     <= 0;
-            br_ctx_done <= 0;
+            br_phase    <= 0;
+            br_mar      <= 0;
             br_wait     <= 0;
         end else begin
             single_step <= 0;
@@ -211,10 +262,19 @@ module dm16_uart_seq #(
             if (running && (pc == end_pc))
                 running <= 0;
 
-            // State 10: Stream the CTX mask (NUM_PE/8 bytes)
+            // State 10: Stream the CTX mask (CTX_BYTES bytes, zero-padded)
             if (cmd_state == 4'd10 && !tx_busy && !tx_start) begin
-                if (dump_idx < NUM_PE / 8) begin
-                    tx_data_in <= all_ctx[dump_idx*8 +: 8];
+                if (dump_idx < CTX_BYTES) begin
+                    tx_data_in <= ctx_padded[dump_idx*8 +: 8];
+                    tx_start   <= 1'b1;
+                    dump_idx   <= dump_idx + 16'd1;
+                end else cmd_state <= 4'd0;
+            end
+
+            // State 23: Stream the configuration (12 bytes)
+            if (cmd_state == 5'd23 && !tx_busy && !tx_start) begin
+                if (dump_idx < 16'd12) begin
+                    tx_data_in <= CFG_BYTES[dump_idx*8 +: 8];
                     tx_start   <= 1'b1;
                     dump_idx   <= dump_idx + 16'd1;
                 end else cmd_state <= 4'd0;
@@ -236,11 +296,19 @@ module dm16_uart_seq #(
                 end else cmd_state <= 4'd0;
             end
 
-            // States 20-22: bulk read. Inject an instruction (CTX ALWAYS once,
-            // then LDM per word), give it 64 clocks to reach every ACC (it
-            // needs about 10), then stream the ACC dump as in state 11.
+            // States 20-22: bulk read. Inject one instruction (see the phases
+            // above), give it 64 clocks to reach every ACC (it needs about
+            // 10), and after each word's load stream the ACC dump as in
+            // state 11.
             if (cmd_state == 5'd20) begin
-                inj_instr <= br_ctx_done ? (I_LDM | {14'd0, br_addr}) : I_CTX_ALWAYS;
+                case (br_phase)
+                    3'd0:    inj_instr <= I_CTX_ALWAYS;
+                    3'd1:    inj_instr <= I_LDI_0;
+                    3'd2:    inj_instr <= I_LDI_HI | {16'd0, br_addr[15:8]};
+                    3'd3:    inj_instr <= I_LDI_LO | {16'd0, br_addr[7:0]};
+                    3'd4:    inj_instr <= I_MAR_ACC;
+                    default: inj_instr <= br_mar ? I_LDX_INC : (I_LDM | {14'd0, br_addr[9:0]});
+                endcase
                 inj_valid <= 1'b1;
                 br_wait   <= 6'd0;
                 cmd_state <= 5'd21;
@@ -248,12 +316,12 @@ module dm16_uart_seq #(
             if (cmd_state == 5'd21) begin
                 br_wait <= br_wait + 6'd1;
                 if (br_wait == 6'd63) begin
-                    if (!br_ctx_done) begin
-                        br_ctx_done <= 1'b1;
-                        cmd_state   <= 5'd20;
+                    if (br_phase != 3'd5) begin
+                        br_phase  <= (br_phase == 3'd0 && !br_mar) ? 3'd5 : br_phase + 3'd1;
+                        cmd_state <= 5'd20;
                     end else begin
-                        dump_idx    <= 16'd0;
-                        cmd_state   <= 5'd22;
+                        dump_idx  <= 16'd0;
+                        cmd_state <= 5'd22;
                     end
                 end
             end
@@ -263,9 +331,9 @@ module dm16_uart_seq #(
                     tx_start   <= 1'b1;
                     dump_idx   <= dump_idx + 16'd1;
                 end else begin
-                    br_addr   <= br_addr + 10'd1;
-                    br_left   <= br_left - 11'd1;
-                    cmd_state <= (br_left == 11'd1) ? 5'd0 : 5'd20;
+                    br_addr   <= br_addr + 16'd1;
+                    br_left   <= br_left - 16'd1;
+                    cmd_state <= (br_left == 16'd1) ? 5'd0 : 5'd20;
                 end
             end
 
@@ -282,6 +350,7 @@ module dm16_uart_seq #(
                         8'h08: cmd_state   <= 4'd13; // SET_BAUD (2 bytes: clocks per bit, big-endian)
                         8'h09: cmd_state   <= 4'd15; // READ_STATUS
                         8'h0A: cmd_state   <= 5'd16; // BULK_READ (4 bytes)
+                        8'h0B: begin dump_idx <= 16'd0; cmd_state <= 5'd23; end // READ_CONFIG
                     endcase
                     4'd1: begin wr_addr[11:8]  <= rx_byte[3:0]; cmd_state <= 4'd2; end
                     4'd2: begin wr_addr[7:0]   <= rx_byte;      cmd_state <= 4'd3; end
@@ -311,13 +380,15 @@ module dm16_uart_seq #(
                         inj_valid <= 1'b1;
                         cmd_state <= 4'd0;
                     end
-                    5'd16: begin br_addr[9:8] <= rx_byte[1:0]; cmd_state <= 5'd17; end
-                    5'd17: begin br_addr[7:0] <= rx_byte;      cmd_state <= 5'd18; end
-                    5'd18: begin br_left[10:8] <= rx_byte[2:0]; cmd_state <= 5'd19; end
+                    5'd16: begin br_addr[15:8] <= rx_byte; cmd_state <= 5'd17; end
+                    5'd17: begin br_addr[7:0]  <= rx_byte; cmd_state <= 5'd18; end
+                    5'd18: begin br_left[15:8] <= rx_byte; cmd_state <= 5'd19; end
                     5'd19: begin
                         br_left[7:0] <= rx_byte;
-                        br_ctx_done  <= 1'b0;
-                        cmd_state    <= ({br_left[10:8], rx_byte} == 11'd0) ? 5'd0 : 5'd20;
+                        br_phase     <= 3'd0;
+                        // past the first 1024 words: read through mar
+                        br_mar       <= ({1'b0, br_addr} + {1'b0, br_left[15:8], rx_byte}) > 17'd1024;
+                        cmd_state    <= ({br_left[15:8], rx_byte} == 16'd0) ? 5'd0 : 5'd20;
                     end
                 endcase
             end

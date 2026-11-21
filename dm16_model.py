@@ -1,8 +1,9 @@
 """
-Reference model of one DM16 PE at any data width W (16, 32, 64, ...).
+Reference model of one DM16 PE at any data width W (16, 32, 64, ...), any
+number of registers NREGS and any memory size 2^MEM_AW.
 
 It executes 24-bit instruction words with the same results as src/dm16_pe.v:
-acc, b, r1..r7, mar, flags, the context stack and local memory. The network
+acc, b, r1..r[NREGS-1], mar, flags, the context stack and local memory. The network
 and NEWS inputs are supplied by the caller (constant values are enough for
 testing). Floating point works per 16-bit lane through dm16_bf16_ref; FCMP
 compares lane 0.
@@ -16,17 +17,20 @@ OP_SWP, OP_CTX, OP_SEND, OP_RECV, OP_NEWS, OP_FPU = range(8, 14)
 
 
 class PE:
-    def __init__(self, W=16, pe_id=0, has_rf=True, mem=None, news=(0, 0, 0, 0), rx=None):
-        assert W % 16 == 0 and W >= 16
+    def __init__(self, W=16, pe_id=0, has_rf=True, mem=None, news=(0, 0, 0, 0), rx=None,
+                 nregs=8, mem_aw=10, has_fpu=True):
+        assert W % 16 == 0 and W >= 16 and mem_aw <= W
         self.W, self.M = W, (1 << W) - 1
+        self.nregs, self.amask = nregs, (1 << mem_aw) - 1
+        self.has_fpu = has_fpu      # without it every FPU instruction is a no-op
         self.id, self.has_rf = pe_id, has_rf
-        self.mem = list(mem) if mem is not None else [0] * 1024
+        self.mem = list(mem) if mem is not None else [0] * (1 << mem_aw)
         self.news = news            # values seen from N, E, W, S
         self.rx = rx                # mailbox word, or None if empty
         self.acc = self.b = self.mar = 0
         self.c = self.z = self.n = 0
         self.ctx_stack = 0b1111
-        self.rf = [0] * 8           # rf[0] unused: r0 is b
+        self.rf = [0] * nregs       # rf[0] unused: r0 is b
 
     # --- helpers -------------------------------------------------------
     def sext10(self, v):
@@ -83,8 +87,9 @@ class PE:
 
         uses_mem = op in (OP_LDM, OP_STM, OP_LDX, OP_STX) or (op in (OP_ALU, OP_FPU) and src == 3)
         use_mar = op in (OP_LDX, OP_STX) or (uses_mem and fc & 1)
-        addr = self.mar if use_mar else imm
-        opb = [self.reg(imm & 7), self.sext10(imm), self.id, self.mem[addr]][src]
+        rn = imm % self.nregs
+        addr = self.mar if use_mar else imm & self.amask
+        opb = [self.reg(rn), self.sext10(imm), self.id, self.mem[addr]][src]
         acc = self.acc
 
         if op == OP_LDI:
@@ -99,13 +104,13 @@ class PE:
         elif op in (OP_STM, OP_STX):
             self.mem[addr] = acc
         elif op == OP_MAR:
-            self.mar = (acc & 0x3FF) if src == 0 else imm
+            self.mar = (acc if src == 0 else imm) & self.amask
         elif op == OP_ALU:
             self.alu(sub, x, opb)
         elif op == OP_SWP:
-            old = self.reg(imm & 7)
+            old = self.reg(rn)
             if sub != 2:
-                self.set_reg(imm & 7, acc)
+                self.set_reg(rn, acc)
             if sub != 1:
                 self.acc = old
         elif op == OP_RECV:
@@ -115,11 +120,11 @@ class PE:
                 self.c = 0
         elif op == OP_NEWS:
             self.acc = self.news[sub & 3]
-        elif op == OP_FPU:
+        elif op == OP_FPU and self.has_fpu:
             self.fpu(sub, opb)
 
         if uses_mem and fc & 2:
-            self.mar = (self.mar + 1) & 0x3FF
+            self.mar = (self.mar + 1) & self.amask
 
     def alu(self, sub, x, opb):
         W, M, acc = self.W, self.M, self.acc
