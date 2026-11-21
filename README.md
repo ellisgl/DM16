@@ -1,4 +1,4 @@
-# DM16
+# DM16 (Dinky Machine 16)
 
 DM16 is a small massively parallel computer in the style of the Thinking
 Machines **Connection Machine**, built in an FPGA. A single sequencer
@@ -430,11 +430,14 @@ reliable limit).
 
 ## Scaling it up
 
-The PE width (`W`), the hypercube size (`DIMS`), PEs per cluster (`LANES`)
-and the torus width (`COLS`) are parameters. [docs/SCALING.md](docs/SCALING.md)
-covers what each costs (with measured per-PE sizes at 16 to 128 bits), what
-fits on which FPGA, what must change beyond 64 PEs, and how several boards
-could be joined into one machine.
+The PE width (`W`), registers per PE (`NREGS`, in flip-flops or block RAM),
+memory per PE (`MEM_AW`), the hypercube size (`DIMS`), PEs per cluster
+(`LANES`) and the torus width (`COLS`) are parameters; the Tang build uses
+16 bits, 8 registers and 1,024 words. [docs/SCALING.md](docs/SCALING.md)
+covers what each costs (with measured sizes), their caveats (for example,
+immediate addresses reach only the first 1,024 words), what fits on which
+FPGA, what must change beyond 64 PEs, and how several boards could be joined
+into one machine.
 
 ## Resource use
 
