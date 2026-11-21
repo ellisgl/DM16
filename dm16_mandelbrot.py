@@ -19,7 +19,7 @@ funnel shifts.
   python3 dm16_mandelbrot.py                 # whole set, 80 x 40
   python3 dm16_mandelbrot.py --check         # also compare with a Python model
   python3 dm16_mandelbrot.py --center=-0.75,0.1 --width 0.5 --max-iter 400
-  python3 dm16_mandelbrot.py --zoom --color      # zoom into Seahorse Valley
+  python3 dm16_mandelbrot.py --zoom --color      # zoom into a miniature copy of the set
   python3 dm16_mandelbrot.py --zoom --loop       # in and out until Ctrl-C
 
 A zoom stops at about 75x on an 80-column view: by then neighbouring pixels
@@ -36,7 +36,7 @@ from dm16_host import (
     OP_LDI, OP_MAR, OP_STX, MEM_INC,
     LOOP, ENDL, BANY, LABEL,
     alu, ctx, ldm, stm, put, get, encode_instr, ldi16,
-    read_mem_grid, upload_and_run,
+    read_mem_block, upload_and_run,
 )
 
 FRAC = 12                       # Q4.12
@@ -200,9 +200,9 @@ def compute(ser, view, w, h, max_iter):
     upload_and_run(ser, prog, timeout=120)
     elapsed = time.monotonic() - t0
     counts = [[0] * w for _ in range(h)]
-    for k in range(bw * bh):
+    for k, block in enumerate(read_mem_block(ser, RES, bw * bh)):
         by, bx = divmod(k, bw)
-        for pe, n in enumerate(read_mem_grid(ser, RES + k)):
+        for pe, n in enumerate(block):
             counts[by * ROWS_PER_BLOCK + pe // COLS][bx * BLOCK + pe % COLS] = n
     return counts, elapsed, len(prog)
 
@@ -221,14 +221,20 @@ def check(counts, view, max_iter):
     return bad
 
 
-SEAHORSE = "-0.7436,0.1318"     # Seahorse Valley: detail all the way down
+# Zoom targets. At 16-bit precision the zoom reaches ~70x, where the
+# period-3 "minibrot" on the antenna fills the view: a complete miniature
+# copy of the set. Seahorse Valley needs far more iterations and precision
+# than 16 bits give at that depth, so it mostly turns black.
+MINIBROT = "-1.7625,0"
+SEAHORSE = "-0.7436,0.1318"
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--port", default=DEFAULT_PORT)
     ap.add_argument("--size", default="80x40", help="WxH in characters (multiples of 8)")
-    ap.add_argument("--center", help=f"default -0.65,0 (still) or {SEAHORSE} (zoom)")
+    ap.add_argument("--center", help=f"default -0.65,0 (still) or {MINIBROT}, the "
+                                     f"period-3 minibrot (zoom); try {SEAHORSE} too")
     ap.add_argument("--width", type=float, default=3.0, help="width of the view in the complex plane")
     ap.add_argument("--aspect", type=float, default=2.0, help="character height / width")
     ap.add_argument("--max-iter", type=int, default=200, help="1..511 (a zoom raises it as it goes deeper)")
@@ -248,7 +254,7 @@ def main():
         ap.error("image too large for the result area")
     if not 0 < args.zoom_factor < 1:
         ap.error("--zoom-factor must be between 0 and 1")
-    cx, cy = (float(v) for v in (args.center or (SEAHORSE if args.zoom else "-0.65,0")).split(","))
+    cx, cy = (float(v) for v in (args.center or (MINIBROT if args.zoom else "-0.65,0")).split(","))
     if make_view(cx, cy, args.width, w, h, args.aspect) is None:
         ap.error("view out of Q4.12 range or too small to resolve")
 

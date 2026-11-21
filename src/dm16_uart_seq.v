@@ -142,12 +142,16 @@ module dm16_uart_seq #(
     //   0x07                      read every PE's ACC (2 * NUM_PE bytes)
     //   0x08 d_hi d_lo            set UART clocks per bit
     //   0x09                      read status byte {6'b0, any_active, running}
+    //   0x0A a_hi a_lo n_hi n_lo  bulk read: n words from address a of every PE
+    //                             (enables all PEs, then for each word injects
+    //                             LDM and streams the ACC dump: n * 2 * NUM_PE
+    //                             bytes; clobbers ACC; the program must be idle)
     localparam integer PC_W = 12;
     reg [23:0]     imem [0:(1 << PC_W) - 1];
     reg [PC_W-1:0] pc;
     reg [PC_W-1:0] end_pc;
     reg        single_step;
-    reg [3:0]  cmd_state;
+    reg [4:0]  cmd_state;
     reg [PC_W-1:0] wr_addr;
     reg [23:0] wr_data;
     reg [7:0]  dump_idx;
@@ -156,12 +160,22 @@ module dm16_uart_seq #(
     reg        inj_valid;
     reg        inj_active;
 
+    // Bulk read (0x0A)
+    localparam [23:0] I_CTX_ALWAYS = 24'h900000;
+    localparam [23:0] I_LDM        = 24'h200000;    // | address
+    reg [9:0]  br_addr;
+    reg [10:0] br_left;
+    reg        br_ctx_done;
+    reg [5:0]  br_wait;
+
     // A multi-byte command that stalls for 2^17 clocks (2.6 ms at 50 MHz)
     // is abandoned, so line noise or bytes sent at the wrong baud rate
     // can't leave the command decoder waiting for data forever.
     reg [16:0] cmd_idle;
-    wire       cmd_in_args = (cmd_state != 4'd0)  && (cmd_state != 4'd10) &&
-                             (cmd_state != 4'd11) && (cmd_state != 4'd15);
+    // States that wait for argument bytes from the host
+    wire       cmd_in_args = ((cmd_state >= 5'd1)  && (cmd_state <= 5'd9))  ||
+                             ((cmd_state >= 5'd12) && (cmd_state <= 5'd14)) ||
+                             ((cmd_state >= 5'd16) && (cmd_state <= 5'd19));
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -176,6 +190,10 @@ module dm16_uart_seq #(
             inj_valid   <= 0;
             clks_per_bit <= CLKS_PER_BIT;
             cmd_idle    <= 0;
+            br_addr     <= 0;
+            br_left     <= 0;
+            br_ctx_done <= 0;
+            br_wait     <= 0;
         end else begin
             single_step <= 0;
             tx_start    <= 0;
@@ -216,6 +234,39 @@ module dm16_uart_seq #(
                 end else cmd_state <= 4'd0;
             end
 
+            // States 20-22: bulk read. Inject an instruction (CTX ALWAYS once,
+            // then LDM per word), give it 64 clocks to reach every ACC (it
+            // needs about 10), then stream the ACC dump as in state 11.
+            if (cmd_state == 5'd20) begin
+                inj_instr <= br_ctx_done ? (I_LDM | {14'd0, br_addr}) : I_CTX_ALWAYS;
+                inj_valid <= 1'b1;
+                br_wait   <= 6'd0;
+                cmd_state <= 5'd21;
+            end
+            if (cmd_state == 5'd21) begin
+                br_wait <= br_wait + 6'd1;
+                if (br_wait == 6'd63) begin
+                    if (!br_ctx_done) begin
+                        br_ctx_done <= 1'b1;
+                        cmd_state   <= 5'd20;
+                    end else begin
+                        dump_idx    <= 8'd0;
+                        cmd_state   <= 5'd22;
+                    end
+                end
+            end
+            if (cmd_state == 5'd22 && !tx_busy && !tx_start) begin
+                if (dump_idx < 2 * NUM_PE) begin
+                    tx_data_in <= all_acc[dump_idx*8 +: 8];
+                    tx_start   <= 1'b1;
+                    dump_idx   <= dump_idx + 8'd1;
+                end else begin
+                    br_addr   <= br_addr + 10'd1;
+                    br_left   <= br_left - 11'd1;
+                    cmd_state <= (br_left == 11'd1) ? 5'd0 : 5'd20;
+                end
+            end
+
             if (rx_valid) begin
                 case (cmd_state)
                     4'd0: case (rx_byte)
@@ -228,6 +279,7 @@ module dm16_uart_seq #(
                         8'h07: begin dump_idx <= 8'd0; cmd_state <= 4'd11; end // READ_ACC_GRID
                         8'h08: cmd_state   <= 4'd13; // SET_BAUD (2 bytes: clocks per bit, big-endian)
                         8'h09: cmd_state   <= 4'd15; // READ_STATUS
+                        8'h0A: cmd_state   <= 5'd16; // BULK_READ (4 bytes)
                     endcase
                     4'd1: begin wr_addr[11:8]  <= rx_byte[3:0]; cmd_state <= 4'd2; end
                     4'd2: begin wr_addr[7:0]   <= rx_byte;      cmd_state <= 4'd3; end
@@ -256,6 +308,14 @@ module dm16_uart_seq #(
                         inj_instr <= (wr_data & 24'hFFFF00) | rx_byte;
                         inj_valid <= 1'b1;
                         cmd_state <= 4'd0;
+                    end
+                    5'd16: begin br_addr[9:8] <= rx_byte[1:0]; cmd_state <= 5'd17; end
+                    5'd17: begin br_addr[7:0] <= rx_byte;      cmd_state <= 5'd18; end
+                    5'd18: begin br_left[10:8] <= rx_byte[2:0]; cmd_state <= 5'd19; end
+                    5'd19: begin
+                        br_left[7:0] <= rx_byte;
+                        br_ctx_done  <= 1'b0;
+                        cmd_state    <= ({br_left[10:8], rx_byte} == 11'd0) ? 5'd0 : 5'd20;
                     end
                 endcase
             end

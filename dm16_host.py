@@ -28,6 +28,8 @@ SYS_CLK_HZ   = 50_000_000         # must match src/dm16_top.v (1200 MHz / ODIV)
 BOOT_BAUD    = 115_200            # FPGA UART rate after reset
 DEFAULT_BAUD = int(os.environ.get("DM16_BAUD", "2000000"))
 MAX_BAUD     = 2_000_000          # the console's USB-UART bridge drops bytes above this
+# Rates the bridge handles: an odd rate such as 1.5 Mbaud wedged its serial side
+SUPPORTED_BAUDS = (115_200, 230_400, 460_800, 500_000, 921_600, 1_000_000, 2_000_000)
 NUM_PE  = (1 << DIMS) * LANES     # PEs
 ROWS    = NUM_PE // COLS          # NEWS torus height
 PE_DIMS = DIMS + (LANES - 1).bit_length()   # bits in a PE_ID
@@ -318,6 +320,9 @@ def open_dm16(port=None, baud=None):
     baud = baud or DEFAULT_BAUD
     if baud > MAX_BAUD:
         raise ValueError(f"{baud} baud is above the bridge's reliable limit ({MAX_BAUD})")
+    if baud not in SUPPORTED_BAUDS:
+        raise ValueError(f"{baud} baud is not one the USB bridge is known to handle; "
+                         f"use one of {SUPPORTED_BAUDS}")
     divider = round(SYS_CLK_HZ / baud)
     if abs(SYS_CLK_HZ / divider - baud) / baud > 0.02:
         raise ValueError(f"{baud} baud is not reachable from {SYS_CLK_HZ} Hz "
@@ -398,6 +403,41 @@ def read_mem_grid(ser, addr):
     inject_instr(ser, ctx(CTX_ALWAYS))
     inject_instr(ser, ldm(addr))
     return read_acc_grid(ser)
+
+
+BULK_MAX_WORDS = 64   # per request: 8 KB, which the USB bridge buffers safely
+
+
+def read_mem_block(ser, addr, count):
+    """Read `count` consecutive words from `addr` on every PE (command 0x0A).
+    Returns a list of `count` lists of NUM_PE ints. Like read_mem_grid it
+    clobbers ACC and enables all PEs; the program must be idle.
+
+    One USB round trip per BULK_MAX_WORDS words instead of one per word. The
+    FPGA sends at the full baud rate but the board's USB bridge forwards only
+    ~80 KB/s, so it has to buffer the difference; a single 128 KB read
+    overflowed it and left its serial side dead until a USB power cycle."""
+    if not (0 <= addr < MEM_WORDS and 0 < count and addr + count <= MEM_WORDS):
+        raise ValueError(f"words {addr}..{addr + count - 1} are outside PE memory")
+    out = []
+    for start in range(addr, addr + count, BULK_MAX_WORDS):
+        out += _read_mem_block(ser, start, min(BULK_MAX_WORDS, addr + count - start))
+    return out
+
+
+def _read_mem_block(ser, addr, count):
+    ser.write(struct.pack(">BHH", 0x0A, addr, count))
+    nbytes = count * 2 * NUM_PE
+    old_timeout = ser.timeout
+    ser.timeout = nbytes * 10 * 1.5 / ser.baudrate + 1
+    try:
+        data = ser.read(nbytes)
+    finally:
+        ser.timeout = old_timeout
+    if len(data) != nbytes:
+        raise RuntimeError(f"bulk read: expected {nbytes} bytes, got {len(data)}")
+    words = struct.unpack(f"<{count * NUM_PE}H", data)
+    return [list(words[k * NUM_PE:(k + 1) * NUM_PE]) for k in range(count)]
 
 
 def read_status(ser):

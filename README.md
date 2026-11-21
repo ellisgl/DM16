@@ -15,7 +15,17 @@ It runs on the Sipeed **Tang Console 138K** (Gowin GW5AST-138) at 50 MHz.
 
 *The Mandelbrot set from `dm16_mandelbrot.py --color`: 64 pixels at a time,
 one per PE, looping with `BANY` until every PE's point has escaped. The whole
-96 × 48 image is a 78-instruction program and takes 25 ms on the board.*
+96 × 48 image is one program run of about a hundred instructions and takes
+25 ms on the board.*
+
+![Zooming into a miniature copy of the Mandelbrot set on DM16](docs/mandelbrot_zoom.gif)
+
+*`dm16_mandelbrot.py --zoom`: 63× into the antenna on the left of the set,
+where a complete miniature copy (a "minibrot") appears. Every frame was
+computed on the board, at about 7 frames a second including the readback; the
+GIF plays it at a steady speed. The zoom stops here because the PEs use 16-bit
+fixed point: any deeper and neighbouring pixels would be less than two steps
+of 1/4096 apart.*
 
 | | |
 |---|---|
@@ -25,7 +35,7 @@ one per PE, looping with `BANY` until every PE's point has escaped. The whole
 | Arithmetic | add/sub/logic, 16 × 16 multiply (low and high halves), barrel shifts, rotates and funnel shifts; bf16 add/sub/mul/compare/convert |
 | Networks | NEWS: 8 × 8 torus, 1 clock per hop. Hypercube: 4 dimensions between clusters, e-cube routing |
 | Sequencer | 4096-instruction program memory, nested hardware loops, jumps, branches on a global OR of all PEs |
-| Host link | UART over the board's USB port, 115200 baud at reset, 2 Mbaud in normal use |
+| Host link | UART over the board's USB port, 115200 baud at reset, 2 Mbaud in normal use; the USB bridge adds ~6 ms per request and forwards ~80 KB/s to the PC |
 | Clock | 50 MHz from the on-chip PLL |
 | Peak rate | 25 M instructions/s × 64 PEs = 1.6 G 16-bit operations/s |
 
@@ -38,9 +48,9 @@ pointer-chasing code, several megabytes of memory for the game data, and a
 screen. DM16 is the opposite kind of machine. It has 64 small PEs that all run
 the *same* instruction, 128 KB of memory in total (2 KB per PE), room for 4096
 instructions, and no video output. Its only link to the outside world is a
-serial port that moves about 200 KB/s, so it couldn't even receive DOOM's
-frames fast enough: a 320 × 200 frame is 64 KB, and DOOM wants 35 of them a
-second.
+USB serial port that carries about 80 KB/s back to the PC, so it couldn't even
+get DOOM's frames out fast enough: a 320 × 200 frame is 64 KB, and DOOM wants
+35 of them a second, over 2 MB/s.
 
 What it *could* do in principle is the part of a 3-D renderer that is
 genuinely parallel: in a Wolfenstein-style ray caster, each PE could trace the
@@ -338,7 +348,10 @@ with open_dm16() as ser:                      # opens the UART at 2 Mbaud
 
 `upload_and_run` resolves labels, writes the program, starts it, and waits for
 the sequencer to finish. `inject_instr` runs a single instruction straight
-away. `read_acc_grid`, `read_mem_grid` and `write_words` move data in and out.
+away. `read_acc_grid`, `read_mem_grid`, `read_mem_block` and `write_words` move data
+in and out. Each request costs a fixed ~6 ms USB round trip, so
+`read_mem_block`, which fetches many words in one request, is much faster
+than a loop of `read_mem_grid` calls.
 
 ### Host protocol
 
@@ -355,6 +368,7 @@ The host library hides this, but the UART commands are:
 | `07` | | read every PE's `acc` (128 bytes) |
 | `08` | `d_hi d_lo` | set the UART clocks per bit (baud rate) |
 | `09` | | read status: bit 0 running, bit 1 any PE active |
+| `0A` | `a_hi a_lo n_hi n_lo` | read `n` words from address `a` of every PE (`n` × 128 bytes) |
 
 ## Building and running
 
@@ -385,7 +399,7 @@ reliable limit).
 | `dm16_prefix_sum.py` | parallel prefix sum across the hypercube |
 | `dm16_stress.py` | repeated runs to catch rare glitches |
 | `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus |
-| `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--zoom` (and `--loop`) to animate a zoom into Seahorse Valley, `--check` to compare every pixel with a Python model |
+| `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--zoom` (and `--loop`) to animate a zoom into a miniature copy of the set, `--check` to compare every pixel with a Python model |
 
 ## Source files
 
@@ -408,9 +422,9 @@ On the GW5AST-138:
 
 | Resource | Used |
 |---|---|
-| Logic (LUTs + ALUs) | 99,362 / 138,240 (72%) |
-| Logic slices (CLS) | 59,457 / 69,120 (87%) |
-| Flip-flops | 31,517 / 139,095 (23%) |
+| Logic (LUTs + ALUs) | 99,503 / 138,240 (72%) |
+| Logic slices (CLS) | 59,430 / 69,120 (86%) |
+| Flip-flops | 31,546 / 139,095 (23%) |
 | Block RAM | 70 / 340 (21%): 64 PE memories + program memory |
 | DSP | 96 / 298 (33%) |
-| Fmax | 60.2 MHz, run at 50 MHz |
+| Fmax | 63.5 MHz, run at 50 MHz |
