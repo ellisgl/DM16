@@ -391,8 +391,8 @@ The host library hides this, but the UART commands are:
 | PEs | 64 (16 clusters × 4) | 8 (4 clusters × 2) | 8 (4 clusters × 2) |
 | Hypercube / NEWS torus | 4-D / 8 × 8 | 2-D / 4 × 2 | 2-D / 4 × 2 |
 | bf16 FPU | yes | yes | **no**: FPU instructions are no-ops |
-| Clock (Fmax) | 50 MHz (54.7) | 27 MHz (48.9) | 27 MHz (46.3) |
-| Logic used | 71% | 59% | 82% |
+| Clock (Fmax) | 50 MHz (58.3) | 27 MHz (54.2) | 27 MHz (48.9) |
+| Logic used | 72% | 58% | 82% |
 | Host link | 2 Mbaud | 1 Mbaud | 1 Mbaud, from reset |
 | `DM16_BOARD` | `console138k` (default) | `nano20k` | `nano9k` |
 | Mandelbrot 80 × 40 | 24 ms | 104 ms | 94 ms |
@@ -503,12 +503,12 @@ On the GW5AST-138:
 
 | Resource | Used |
 |---|---|
-| Logic (LUTs + ALUs) | 97,535 / 138,240 (71%) |
-| Logic slices (CLS) | 58,951 / 69,120 (86%) |
-| Flip-flops | 31,568 / 139,095 (23%) |
+| Logic (LUTs + ALUs) | 99,475 / 138,240 (72%) |
+| Logic slices (CLS) | 59,521 / 69,120 (87%) |
+| Flip-flops | 31,952 / 139,095 (23%) |
 | Block RAM | 70 / 340 (21%): 64 PE memories + program memory |
 | DSP | 96 / 298 (33%) |
-| Fmax | 54.7 MHz, run at 50 MHz (the slowest path is the network injection handshake) |
+| Fmax | 58.3 MHz, run at 50 MHz (the slowest path is inside the hypercube router) |
 
 ## Known issues
 
@@ -516,7 +516,8 @@ On the GW5AST-138:
   long runs of `dm16_mandelbrot.py --check`, a few pixels (4 in one image, 3
   across two zoom frames) came back with a lower iteration count than the
   model's; the ones traced came from PEs 60 and 61, in the same cluster. About
-  1,500 checked frames and several thousand other checks since then have all
-  been correct, so the cause (a marginal path in this build's placement, or
-  corruption on the USB link) is unknown. Run with `--check` if you need
+  1,700 checked frames and several thousand other checks since then have all
+  been correct, including on a later build with more timing margin (Fmax 54.7
+  → 58.3 MHz, from buffering the network injection), so the cause (a marginal
+  path in that build's placement, or corruption on the USB link) is unknown. Run with `--check` if you need
   certainty, and please report a reproducible case.

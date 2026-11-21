@@ -106,15 +106,44 @@ module dm16_cluster #(
         end
     end
 
-    // Injection: fixed priority, lowest lane first
-    assign rt_in_valid = |tx_valid;
+    // Injection: fixed priority, lowest lane first, into a one-packet
+    // buffer in front of the router.
+    //
+    // The buffer breaks what used to be one long combinational loop in a
+    // single clock (PE valid -> arbiter -> router arbitration -> router
+    // ready -> arbiter -> PE), the design's slowest path. Now a PE's packet
+    // is accepted when the buffer is empty, which comes from a flip-flop,
+    // and the router only sees the buffer's flip-flops. The buffer can't
+    // fill and drain on the same clock, which keeps the two sides apart:
+    // at most one packet every two clocks per cluster, far more than the
+    // links carry (a packet takes several clocks per hop).
+    reg [PKT_W-1:0] inj_pkt;
+    reg             inj_valid;
+    reg [PKT_W-1:0] pick_pkt;
+
+    assign rt_in_valid = inj_valid;
+    always @(*) rt_in_pkt = inj_pkt;
+
     always @(*) begin
-        rt_in_pkt = tx_pkt[PKT_W-1:0];
-        tx_ready  = {LANES{1'b0}};
+        pick_pkt = tx_pkt[PKT_W-1:0];
+        tx_ready = {LANES{1'b0}};
         for (k = LANES - 1; k >= 0; k = k - 1)
-            if (tx_valid[k]) rt_in_pkt = tx_pkt[k*PKT_W +: PKT_W];
+            if (tx_valid[k]) pick_pkt = tx_pkt[k*PKT_W +: PKT_W];
         for (k = 0; k < LANES; k = k + 1)
-            tx_ready[k] = rt_in_ready && ((tx_valid & ((1 << k) - 1)) == 0);
+            tx_ready[k] = !inj_valid && ((tx_valid & ((1 << k) - 1)) == 0);
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            inj_valid <= 1'b0;
+            inj_pkt   <= {PKT_W{1'b0}};
+        end else if (inj_valid) begin
+            if (rt_in_ready)
+                inj_valid <= 1'b0;          // the router took it
+        end else if (|tx_valid) begin
+            inj_valid <= 1'b1;              // take the highest-priority PE's packet
+            inj_pkt   <= pick_pkt;
+        end
     end
 
     wire [MEM_AW*LANES-1:0] mem_addr;

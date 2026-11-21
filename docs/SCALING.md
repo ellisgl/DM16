@@ -50,12 +50,14 @@ Shared logic is small by comparison:
 | Sequencer and host interface | small | small | its 4096-instruction program memory is block RAM on Gowin (6 blocks); Yosys builds it from flip-flops because it is written inside a reset block, which would need restructuring for other vendors |
 
 On the Tang Console itself (Gowin GW5AST-138, measured by the Gowin tools),
-the whole 64 × 16-bit machine uses 71% of the logic, 86% of the logic slices,
+the whole 64 × 16-bit machine uses 72% of the logic, 87% of the logic slices,
 23% of the flip-flops, 21% of the block RAM and 33% of the DSPs, with Fmax
-54.7 MHz (between 54.7 and 64.7 MHz across today's builds of much the same
-design; the slowest path is in the network, not the PEs). The Tang Nano 20K
-(8 PEs with FPUs) uses 59% of its GW2AR-18 at 48.9 MHz, and the Nano 9K (8
-integer-only PEs) 82% of its GW1NR-9 at 46.3 MHz.
+58.3 MHz; the slowest path is inside the hypercube router, not the PEs. (A
+one-packet buffer between each cluster's PEs and its router removed the
+previous slowest path, the injection handshake.) The Tang Nano 20K (8 PEs
+with FPUs) uses 58% of its GW2AR-18 at 54.2 MHz, and the Nano 9K (8
+integer-only PEs) 82% of its GW1NR-9 at 48.9 MHz; on those the slowest paths
+are in the PEs.
 
 ## Data width (`W`)
 
