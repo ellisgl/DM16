@@ -1,10 +1,10 @@
 """
-DM8 basic hardware tests: local memory + ALU, NEWS torus, hypercube network.
+DM16 basic hardware tests: local memory + ALU, NEWS torus, hypercube network.
 """
 import serial
 
-from dm8_host import (
-    DEFAULT_PORT, open_dm8,
+from dm16_host import (
+    DEFAULT_PORT, open_dm16,
     NUM_PE, ROWS, COLS, PE_DIMS,
     ALU_ADD, ALU_MOV, ALU_MUL, SRC_B, SRC_ID, SRC_IMM, CTX_ALWAYS, CTX_IF_ID,
     NEWS_E, NEWS_S, DEST_IMM, DEST_XOR, OP_NEWS,
@@ -26,7 +26,7 @@ def report(name, got, exp):
 def main(port=None):
     ok = True
     port = port or DEFAULT_PORT
-    with open_dm8(port) as ser:
+    with open_dm16(port) as ser:
         # ------------------------------------------------------------------
         # 1. Local memory + ALU: mem[0x011] = seed + PE_ID
         # ------------------------------------------------------------------

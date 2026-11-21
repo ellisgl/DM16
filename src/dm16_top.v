@@ -1,7 +1,7 @@
-// DM8 on the Tang Console 138K (GW5AST-138):
+// DM16 on the Tang Console 138K (GW5AST-138):
 // 64 PEs (16 clusters x 4, 4-D hypercube, 8x8 NEWS torus).
-// Keep the geometry in sync with dm8_host.py.
-module dm8_top (
+// Keep the geometry in sync with dm16_host.py.
+module dm16_top (
     input  wire       clk_in,        // 50 MHz (V22)
     input  wire       key_reset_n,   // active low (AA13)
     input  wire       uart_rx,       // from BL616 USB-UART
@@ -14,7 +14,7 @@ module dm8_top (
     localparam integer CLK_HZ = 1_200_000_000 / ODIV;
 
     wire clk, pll_lock;
-    dm8_pll #(.ODIV(ODIV)) u_pll (
+    dm16_pll #(.ODIV(ODIV)) u_pll (
         .clkin  (clk_in),
         .clkout (clk),
         .lock   (pll_lock)
@@ -23,7 +23,7 @@ module dm8_top (
     wire       running, all_active;
     wire [3:0] quarter_active;
 
-    dm8_core #(
+    dm16_core #(
         .DIMS   (4),
         .LANES  (4),
         .COLS   (8),

@@ -1,6 +1,6 @@
-"""Exact reference model of the DM8 bfloat16 unit (RNE, flush-to-zero, canonical NaN 0x7FC0).
+"""Exact reference model of the DM16 bfloat16 unit (RNE, flush-to-zero, canonical NaN 0x7FC0).
 
-Used by dm8_fp_test.py to check board results bit-for-bit.
+Used by dm16_fp_test.py to check board results bit-for-bit.
 """
 from fractions import Fraction
 QNAN = 0x7FC0

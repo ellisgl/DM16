@@ -1,32 +1,32 @@
 """
-DM8 host library: machine geometry, instruction encoding and UART helpers.
+DM16 host library: machine geometry, instruction encoding and UART helpers.
 
-Every DM8 script imports from here, so the machine size only lives in one
-place. Keep the geometry in sync with src/dm8_top.v.
+Every DM16 script imports from here, so the machine size only lives in one
+place. Keep the geometry in sync with src/dm16_top.v.
 
 Tang Console 138K: 64 PEs (16 clusters x 4 on a 4-D hypercube, 8x8 NEWS
 torus), 16-bit datapath, bfloat16 FPU in every PE, 1024 x 16-bit words of
 memory per PE.
 
 The serial port defaults to /dev/tang_console_uart (udev symlink, see
-udev/85-tang-console-138k.rules); override it with DM8_PORT. The link comes
-up at 115200 baud after every FPGA reset; open_dm8() switches both ends to
-DM8_BAUD (default 2 Mbaud) and closing the port switches back to 115200.
+udev/85-tang-console-138k.rules); override it with DM16_PORT. The link comes
+up at 115200 baud after every FPGA reset; open_dm16() switches both ends to
+DM16_BAUD (default 2 Mbaud) and closing the port switches back to 115200.
 """
 import os
 import struct
 import time
 
 # ==============================================================================
-# Machine geometry (must match src/dm8_top.v)
+# Machine geometry (must match src/dm16_top.v)
 # ==============================================================================
 DIMS  = 4                         # hypercube dimensions between clusters
 LANES = 4                         # PEs per cluster
 COLS  = 8                         # NEWS torus width
-DEFAULT_PORT = os.environ.get("DM8_PORT", "/dev/tang_console_uart")
-SYS_CLK_HZ   = 50_000_000         # must match src/dm8_top.v (1200 MHz / ODIV)
+DEFAULT_PORT = os.environ.get("DM16_PORT", "/dev/tang_console_uart")
+SYS_CLK_HZ   = 50_000_000         # must match src/dm16_top.v (1200 MHz / ODIV)
 BOOT_BAUD    = 115_200            # FPGA UART rate after reset
-DEFAULT_BAUD = int(os.environ.get("DM8_BAUD", "2000000"))
+DEFAULT_BAUD = int(os.environ.get("DM16_BAUD", "2000000"))
 MAX_BAUD     = 2_000_000          # the console's USB-UART bridge drops bytes above this
 NUM_PE  = (1 << DIMS) * LANES     # PEs
 ROWS    = NUM_PE // COLS          # NEWS torus height
@@ -243,8 +243,8 @@ def _set_fpga_divider(ser, divider):
     time.sleep(0.03)
 
 
-def open_dm8(port=None, baud=None):
-    """Open the DM8 UART and switch both ends to `baud` (default DM8_BAUD).
+def open_dm16(port=None, baud=None):
+    """Open the DM16 UART and switch both ends to `baud` (default DM16_BAUD).
 
     The FPGA always boots at 115200, and closing the returned port (or
     leaving a `with` block) switches it back to 115200, so every session
@@ -254,7 +254,7 @@ def open_dm8(port=None, baud=None):
     """
     import serial
 
-    class _DM8Serial(serial.Serial):
+    class _DM16Serial(serial.Serial):
         def close(self):
             if self.is_open and self.baudrate != BOOT_BAUD:
                 try:
@@ -272,7 +272,7 @@ def open_dm8(port=None, baud=None):
     if abs(SYS_CLK_HZ / divider - baud) / baud > 0.02:
         raise ValueError(f"{baud} baud is not reachable from {SYS_CLK_HZ} Hz "
                          f"(nearest {SYS_CLK_HZ / divider:.0f})")
-    ser = _DM8Serial(port, baud, timeout=0.2)
+    ser = _DM16Serial(port, baud, timeout=0.2)
     try:
         ser.set_low_latency_mode(True)     # FTDI latency timer -> 1 ms
     except Exception:
@@ -294,14 +294,14 @@ def open_dm8(port=None, baud=None):
                 break
         else:
             serial.Serial.close(ser)
-            raise RuntimeError(f"DM8 did not answer at {baud} baud on {port} "
+            raise RuntimeError(f"DM16 did not answer at {baud} baud on {port} "
                                "(press the board's reset button to return it to 115200)")
     _remember_baud(baud)
     ser.timeout = 1
     return ser
 
 
-_BAUD_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "dm8_last_baud")
+_BAUD_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "dm16_last_baud")
 
 
 def _last_baud():
@@ -355,7 +355,7 @@ def read_status(ser):
     ser.write(b"\x09")
     b = ser.read(1)
     if len(b) != 1:
-        raise RuntimeError("no status byte from DM8")
+        raise RuntimeError("no status byte from DM16")
     return bool(b[0] & 1), bool(b[0] & 2)
 
 
@@ -364,7 +364,7 @@ def wait_idle(ser, timeout=10.0):
     t_end = time.monotonic() + timeout
     while read_status(ser)[0]:
         if time.monotonic() > t_end:
-            raise TimeoutError("DM8 program still running")
+            raise TimeoutError("DM16 program still running")
         time.sleep(0.001)
 
 

@@ -1,9 +1,9 @@
-// DM8 array core: sequencer + clusters + hypercube network + NEWS torus.
+// DM16 array core: sequencer + clusters + hypercube network + NEWS torus.
 // Board independent - the board top supplies the clock, reset and pins.
 //
 //   PE_ID = {cluster[DIMS-1:0], lane}
 //   NEWS torus: ROWS x COLS, row = PE_ID / COLS, col = PE_ID % COLS
-module dm8_core #(
+module dm16_core #(
     parameter integer DIMS   = 2,          // hypercube dimensions (clusters = 2^DIMS)
     parameter integer LANES  = 2,          // PEs per cluster (2 or 4)
     parameter integer COLS   = 4,          // NEWS torus width
@@ -36,7 +36,7 @@ module dm8_core #(
     reg                 any_active;    // global OR, stage 2 (to the sequencer)
 
     // 1. UART host loader & global SIMD sequencer
-    dm8_uart_seq #(
+    dm16_uart_seq #(
         .CLK_HZ        (CLK_HZ),
         .NUM_PE        (NUM_PE)
     ) u_seq (
@@ -101,7 +101,7 @@ module dm8_core #(
             wire [PKT_W-1:0] rt_in_pkt, rt_out_pkt;
             wire             rt_in_valid, rt_in_ready, rt_out_valid, rt_out_ready;
 
-            dm8_cluster #(
+            dm16_cluster #(
                 .LANES   (LANES),
                 .BASE_ID (n * LANES)
             ) u_cluster (

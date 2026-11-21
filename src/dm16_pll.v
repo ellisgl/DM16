@@ -2,7 +2,7 @@
 //   50 MHz in -> VCO 1200 MHz (x24) -> CLKOUT0 = 1200 / ODIV MHz
 // PLL_INIT (pll_init.v, from Gowin's generated IP) calibrates the charge
 // pump / loop filter at start-up and resets the PLL until it locks.
-module dm8_pll #(
+module dm16_pll #(
     parameter integer ODIV = 16          // 1200 / 16 = 75 MHz
 )(
     input  wire clkin,                   // 50 MHz

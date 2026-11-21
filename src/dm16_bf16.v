@@ -16,7 +16,7 @@
 //   * overflow -> +/-inf, any NaN or invalid op (inf-inf, 0*inf) -> 0x7FC0
 //
 // op: 0 = a + b, 1 = a - b, 2 = a * b, 3 = int16 -> bf16 (from a, rounded RNE)
-module dm8_bf16 (
+module dm16_bf16 (
     input  wire        clk,
     input  wire        rst_n,
     input  wire        start,

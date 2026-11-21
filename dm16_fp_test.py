@@ -1,8 +1,8 @@
 """
-DM8 16-bit PE / bfloat16 FPU board test.
+DM16 16-bit PE / bfloat16 FPU board test.
 
 Every PE gets its own operands, runs the same SIMD program, and the results
-are checked bit-for-bit against dm8_bf16_ref (exact model).
+are checked bit-for-bit against dm16_bf16_ref (exact model).
 
   - FADD / FSUB / FMUL with a memory operand
   - a dependent chain: y = (a*b + a) * b
@@ -15,9 +15,9 @@ import random
 
 import serial
 
-import dm8_bf16_ref as ref
-from dm8_host import (
-    DEFAULT_PORT, open_dm8,
+import dm16_bf16_ref as ref
+from dm16_host import (
+    DEFAULT_PORT, open_dm16,
     NUM_PE,
     ALU_ASR, ALU_MOV, ALU_MUL, ALU_SUB, SRC_ID, SRC_IMM, SRC_MEM, MEM_MAR, MEM_INC,
     CTX_ALWAYS, CTX_IF_N,
@@ -58,7 +58,7 @@ def main():
     arr = [[rng.getrandbits(16) for _ in range(NUM_PE)] for _ in range(4)]
     ok = True
 
-    with open_dm8(args.port) as ser:
+    with open_dm16(args.port) as ser:
         write_words(ser, A, a)
         write_words(ser, B, b)
         for k in range(4):
@@ -118,8 +118,8 @@ def main():
             fl = lambda bits: [bf16_to_float(x) for x in bits]
             print_grid("a", fl(a), fmt="{:10.4g}")
             print_grid("b", fl(b), fmt="{:10.4g}")
-            print_grid("a + b (DM8)", fl(got["FADD a + b"]), fmt="{:10.4g}")
-            print_grid("a * b (DM8)", fl(got["FMUL a * b"]), fmt="{:10.4g}")
+            print_grid("a + b (DM16)", fl(got["FADD a + b"]), fmt="{:10.4g}")
+            print_grid("a * b (DM16)", fl(got["FMUL a * b"]), fmt="{:10.4g}")
 
     print("\nALL PASS" if ok else "\nFAILURES")
     return 0 if ok else 1

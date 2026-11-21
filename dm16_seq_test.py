@@ -1,11 +1,11 @@
 """
-DM8 sequencer control-flow test: hardware loops, jumps, HALT and
+DM16 sequencer control-flow test: hardware loops, jumps, HALT and
 data-dependent branches on the global OR of the PE context flags.
 """
 import argparse
 
-from dm8_host import (
-    DEFAULT_PORT, open_dm8, NUM_PE,
+from dm16_host import (
+    DEFAULT_PORT, open_dm16, NUM_PE,
     ALU_ADD, ALU_MOV, ALU_OR, ALU_SUB, SRC_ID, SRC_IMM, CTX_ALWAYS, CTX_IF_NZ, CTX_NEVER,
     LOOP, ENDL, JMP, BANY, BNONE, HALT, LABEL,
     alu, ctx, ldm, stm, ldi16, read_mem_grid, read_status, upload_and_run,
@@ -28,7 +28,7 @@ def main():
     args = ap.parse_args()
     ok = True
 
-    with open_dm8(args.port) as ser:
+    with open_dm16(args.port) as ser:
         print("Sequencer control flow")
 
         # 1. Simple loop: acc = PE_ID + 100

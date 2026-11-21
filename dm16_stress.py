@@ -1,5 +1,5 @@
 """
-DM8 glitch localiser.
+DM16 glitch localiser.
 
 Runs the same small SIMD kernel many times and checks every PE afterwards.
 The kernel mirrors the prefix-sum combine step: unconditional BRAM
@@ -8,7 +8,7 @@ read-modify-write, then a context-masked read-modify-write on odd PEs only.
 Mode "once":   upload the kernel ONE time, then re-run it N times with only
                the 3-byte RUN command (almost no UART traffic).
 Mode "reload": re-upload the kernel before every run (heavy UART traffic,
-               like dm8_prefix_sum.py does).
+               like dm16_prefix_sum.py does).
 
 If errors show up only in "reload" mode, uploads are being corrupted
 (UART / BL616 bridge). If they show up in "once" mode as well, the fault
@@ -22,8 +22,8 @@ import time
 
 import serial
 
-from dm8_host import (
-    DEFAULT_PORT, open_dm8,
+from dm16_host import (
+    DEFAULT_PORT, open_dm16,
     NUM_PE, OP_ALU, OP_LDI, OP_LDM, OP_SET_CTX, OP_STM, ALU_ADD, ALU_AND,
     encode_instr, inject_instr, read_mem_grid, upload_and_run, print_grid,
 )
@@ -61,7 +61,7 @@ def main():
     args = ap.parse_args()
     n = min(args.n, 255)
 
-    with open_dm8(args.port) as ser:
+    with open_dm16(args.port) as ser:
         inject_instr(ser, encode_instr(OP_SET_CTX, sub_op=0x0))
         inject_instr(ser, encode_instr(OP_LDI, imm10=0))
         inject_instr(ser, encode_instr(OP_STM, imm10=MEM_A))

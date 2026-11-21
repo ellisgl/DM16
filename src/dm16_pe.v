@@ -1,4 +1,4 @@
-// DM8 processing element - 16-bit datapath with a built-in bfloat16 FPU.
+// DM16 processing element - 16-bit datapath with a built-in bfloat16 FPU.
 //
 // Registers: acc, b (16 bits; each holds an int16 or a bf16), mar (10 bits),
 //            flags C/Z/N, 4-deep context stack.
@@ -33,7 +33,7 @@
 //         FADD/FSUB/FMUL/FI2F complete two clocks after they execute; the
 //         sequencer adds an idle cycle after them so the next instruction
 //         sees the result.
-module dm8_pe #(
+module dm16_pe #(
     parameter [5:0] PE_ID = 6'd0
 )(
     input  wire        clk,
@@ -209,7 +209,7 @@ module dm8_pe #(
     wire [15:0] fp_result;
     reg         fp_wb1, fp_wb2;
 
-    dm8_bf16 u_fpu (
+    dm16_bf16 u_fpu (
         .clk    (clk),
         .rst_n  (rst_n),
         .start  (fp_start),

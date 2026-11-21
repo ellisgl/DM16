@@ -1,13 +1,13 @@
 """
-Conway's Game of Life on the DM8 8x8 NEWS torus (one cell per PE).
+Conway's Game of Life on the DM16 8x8 NEWS torus (one cell per PE).
 """
 import serial
 import struct
 import time
 
 
-from dm8_host import (
-    DEFAULT_PORT, open_dm8,
+from dm16_host import (
+    DEFAULT_PORT, open_dm16,
     ROWS, COLS, NUM_PE,
     OP_ALU, OP_LDI, OP_LDM, OP_NEWS, OP_SET_CTX, OP_STM, OP_SWP,
     ALU_ADD, ALU_SUB, ALU_MOV, NEWS_N, NEWS_E, NEWS_W, NEWS_S,
@@ -118,7 +118,7 @@ def seed_pattern(ser, alive_coords):
     inject_instr(ser, encode_instr(OP_SET_CTX, sub_op=0x0, flag_ctl=0x0))
 
 def render_grid(gen, grid):
-    print(f"\033[H\033[J=== DM8 Connection Machine: Game of Life (Gen {gen}) ===")
+    print(f"\033[H\033[J=== DM16 Connection Machine: Game of Life (Gen {gen}) ===")
     for r in range(ROWS):
         line = " ".join("██" if grid[r * COLS + c] else "··" for c in range(COLS))
         print(f"  {line}")
@@ -130,7 +130,7 @@ def main(port=None, generations=40, delay=0.15):
     pattern = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
 
     port = port or DEFAULT_PORT
-    with open_dm8(port) as ser:
+    with open_dm16(port) as ser:
         # Upload the 1-generation kernel once into IMEM
         ser.write(b"\x04")
         for addr, instr in enumerate(prog):

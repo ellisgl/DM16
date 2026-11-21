@@ -1,19 +1,19 @@
-# DM8 build for the Tang Console 138K. From the project directory:
-#   gw_sh build.tcl     ->  impl/pnr/DM8.fs
+# DM16 build for the Tang Console 138K. From the project directory:
+#   gw_sh build.tcl     ->  impl/pnr/DM16.fs
 set_device GW5AST-LV138PG484AC1/I0 -device_version B
-add_file src/dm8_top.v
-add_file src/dm8_pll.v
+add_file src/dm16_top.v
+add_file src/dm16_pll.v
 add_file src/pll_init.v
-add_file src/dm8_core.v
-add_file src/dm8_uart_seq.v
-add_file src/dm8_cluster.v
-add_file src/dm8_pe.v
-add_file src/dm8_bf16.v
+add_file src/dm16_core.v
+add_file src/dm16_uart_seq.v
+add_file src/dm16_cluster.v
+add_file src/dm16_pe.v
+add_file src/dm16_bf16.v
 add_file src/hypercube_router.v
-add_file src/dm8.cst
-add_file src/dm8.sdc
-set_option -output_base_name DM8
-set_option -top_module dm8_top
+add_file src/dm16.cst
+add_file src/dm16.sdc
+set_option -output_base_name DM16
+set_option -top_module dm16_top
 set_option -verilog_std v2001
 set_option -use_mspi_as_gpio 1
 set_option -use_sspi_as_gpio 1

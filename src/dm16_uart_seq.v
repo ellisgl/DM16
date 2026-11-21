@@ -1,4 +1,4 @@
-module dm8_uart_seq #(
+module dm16_uart_seq #(
     parameter integer CLK_HZ = 54_000_000,
     parameter integer BAUD   = 115_200,
     parameter integer NUM_PE = 8

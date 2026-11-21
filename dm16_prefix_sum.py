@@ -1,5 +1,5 @@
 """
-Hypercube inclusive prefix sum (scan) across all DM8 PEs.
+Hypercube inclusive prefix sum (scan) across all DM16 PEs.
 
 Each PE starts with 1, so the result in PE i is i + 1.
 
@@ -11,8 +11,8 @@ Per dimension d, every PE at once (CM-2 style "cube swap"):
 """
 import serial
 
-from dm8_host import (
-    DEFAULT_PORT, open_dm8,
+from dm16_host import (
+    DEFAULT_PORT, open_dm16,
     NUM_PE, PE_DIMS,
     ALU_ADD, ALU_AND, ALU_MOV, SRC_B, SRC_ID, SRC_IMM, CTX_ALWAYS, CTX_IF_NZ, DEST_XOR,
     NOP, RECV, SWP, alu, ctx, ldm, stm, send, ldi16,
@@ -43,7 +43,7 @@ def stage_program(dim):
 
 def main(port=None):
     port = port or DEFAULT_PORT
-    with open_dm8(port) as ser:
+    with open_dm16(port) as ser:
         inject_instr(ser, ctx(CTX_ALWAYS))
         for ins in ldi16(1):
             inject_instr(ser, ins)

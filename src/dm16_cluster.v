@@ -3,7 +3,7 @@
 //
 // Packet: {valid, 1'b0, dest[5:0], data[15:0]}
 //   dest = {cluster, lane}; the lane is dest[LANE_BITS-1:0] (bits 16 +: LANE_BITS).
-module dm8_cluster #(
+module dm16_cluster #(
     parameter integer LANES   = 2,       // PEs in this cluster (2 or 4)
     parameter [5:0]   BASE_ID = 6'd0     // PE_ID of lane 0 (cluster * LANES)
 )(
@@ -111,7 +111,7 @@ module dm8_cluster #(
                 end
             end
 
-            dm8_pe #(
+            dm16_pe #(
                 .PE_ID(BASE_ID + i)
             ) u_pe (
                 .clk          (clk),
