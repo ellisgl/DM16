@@ -1,14 +1,16 @@
 // DM16 processing element - 16-bit datapath with a built-in bfloat16 FPU.
 //
 // Registers: acc, b (16 bits; each holds an int16 or a bf16), mar (10 bits),
-//            flags C/Z/N, 4-deep context stack.
+//            flags C/Z/N, 4-deep context stack, and (with HAS_RF) r1..r7.
+//            r0 is b. Without HAS_RF every r[n] is b.
+//            n = imm10[2:0] wherever a register is named.
 // Memory:    1024 x 16-bit words (2 KB), word addressed.
 //
 // Instruction (24 bits): opcode[23:20] sub_op[19:16] src_sel[15:14]
 //                        flag_ctl[13:10] imm10[9:0]
 //
 // Operand B (src_sel) for ALU and FPU ops:
-//   0 = b   1 = sign-extended imm10   2 = PE_ID   3 = mem[addr]
+//   0 = r[n] (r0 = b)   1 = sign-extended imm10   2 = PE_ID   3 = mem[addr]
 //
 // Memory addressing (any instruction touching memory):
 //   addr = flag_ctl[0] ? mar : imm10;  flag_ctl[1] = post-increment mar
@@ -29,7 +31,8 @@
 //         fill from b: SHLN acc = ({acc,b} << n)[31:16],
 //                      SHRN acc = ({b,acc} >> n)[15:0].
 //         MULH: C = 0, Z/N from the high half.
-// 8 SWP   acc <-> b
+// 8 SWP   sub 0: acc <-> r[n]   1 PUT: r[n] = acc   2 GET: acc = r[n]
+//         (flags unchanged; SWP with n = 0 is the original acc <-> b)
 // 9 CTX   context control (see cond_eval)
 // A SEND  send b; dest = src_sel 0: imm[5:0]  1: acc[5:0]  2: PE_ID ^ imm[5:0]
 // B RECV  b = mailbox, C = 1 if a packet was waiting (else C = 0)
@@ -42,7 +45,8 @@
 //         sequencer adds an idle cycle after them so the next instruction
 //         sees the result.
 module dm16_pe #(
-    parameter [5:0] PE_ID = 6'd0
+    parameter [5:0] PE_ID  = 6'd0,
+    parameter       HAS_RF = 1'b1      // r1..r7 (flip-flops)
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -153,12 +157,33 @@ module dm16_pe #(
     always @(posedge clk) mem_q <= mem_rdata;
 
     // ------------------------------------------------------------------
+    // Register file: r0 is b_reg; r1..r7 are flip-flops (this device has
+    // no distributed RAM; entry 0 of rf is never used).
+    // ------------------------------------------------------------------
+    wire [2:0]  r_idx = imm10[2:0];
+    wire [15:0] r_val;
+    wire        r_put = instr_valid && ctx && (opcode == OP_SWP) &&
+                        (sub_op != 4'd2);       // SWP or PUT
+
+    generate
+        if (HAS_RF) begin : g_rf
+            reg [15:0] rf [0:7];
+            always @(posedge clk)
+                if (r_put && (r_idx != 3'd0))
+                    rf[r_idx] <= acc;
+            assign r_val = (r_idx == 3'd0) ? b_reg : rf[r_idx];
+        end else begin : g_no_rf   // every r[n] is b
+            assign r_val = b_reg;
+        end
+    endgenerate
+
+    // ------------------------------------------------------------------
     // Operand B
     // ------------------------------------------------------------------
     reg [15:0] op_b;
     always @(*) begin
         case (src_sel)
-            2'b00: op_b = b_reg;
+            2'b00: op_b = r_val;
             2'b01: op_b = simm;
             2'b10: op_b = {10'd0, PE_ID};
             2'b11: op_b = mem_q;
@@ -349,9 +374,11 @@ module dm16_pe #(
                             flag_n <= alu_res[15];
                         end
 
-                        OP_SWP: begin
-                            acc   <= b_reg;
-                            b_reg <= acc;
+                        OP_SWP: begin       // r1..r7 are written by g_rf
+                            if (sub_op != 4'd1)
+                                acc <= r_val;                           // SWP, GET
+                            if ((sub_op != 4'd2) && (r_idx == 3'd0 || !HAS_RF))
+                                b_reg <= acc;                           // SWP, PUT
                         end
 
                         OP_SEND: begin

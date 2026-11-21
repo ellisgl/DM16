@@ -69,6 +69,11 @@ ALU_X    = 0x4  # flag_ctl bit that selects the variant above
 
 # Operand B (src_sel) for ALU / FPU
 SRC_B, SRC_IMM, SRC_ID, SRC_MEM = 0, 1, 2, 3
+SRC_R = SRC_B   # register r[imm & 7]; r0 is b, so imm = 0 is the b register
+NUM_REGS = 8    # r0 (= b) .. r7
+
+# SWP sub-ops (register number in imm)
+SWP_XCHG, SWP_PUT, SWP_GET = 0, 1, 2
 
 # SEND destination modes (src_sel)
 DEST_IMM, DEST_ACC, DEST_XOR = 0, 1, 2     # DEST_XOR: PE_ID ^ imm (cube swap)
@@ -235,8 +240,23 @@ def assemble(items):
     return out
 
 
+def swp(r=0):
+    """acc <-> r[r]"""
+    return encode_instr(OP_SWP, sub_op=SWP_XCHG, imm10=r & 7)
+
+
+def put(r):
+    """r[r] = acc"""
+    return encode_instr(OP_SWP, sub_op=SWP_PUT, imm10=r & 7)
+
+
+def get(r):
+    """acc = r[r] (flags unchanged)"""
+    return encode_instr(OP_SWP, sub_op=SWP_GET, imm10=r & 7)
+
+
 NOP  = encode_instr(OP_NOP)
-SWP  = encode_instr(OP_SWP)
+SWP  = swp(0)
 RECV = encode_instr(OP_RECV)
 
 

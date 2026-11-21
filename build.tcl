@@ -1,5 +1,6 @@
 # DM16 build for the Tang Console 138K. From the project directory:
-#   gw_sh build.tcl     ->  impl/pnr/DM16.fs
+#   ./build.sh          ->  impl/pnr/DM16.fs, timestamped build.log
+#   (or gw_sh build.tcl directly, untimestamped)
 set_device GW5AST-LV138PG484AC1/I0 -device_version B
 add_file src/dm16_top.v
 add_file src/dm16_pll.v
