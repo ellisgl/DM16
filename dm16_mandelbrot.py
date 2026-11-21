@@ -18,7 +18,12 @@ funnel shifts.
 
   python3 dm16_mandelbrot.py                 # whole set, 80 x 40
   python3 dm16_mandelbrot.py --check         # also compare with a Python model
-  python3 dm16_mandelbrot.py --center -0.75,0.1 --width 0.5 --max-iter 400
+  python3 dm16_mandelbrot.py --center=-0.75,0.1 --width 0.5 --max-iter 400
+  python3 dm16_mandelbrot.py --zoom --color      # zoom into Seahorse Valley
+  python3 dm16_mandelbrot.py --zoom --loop       # in and out until Ctrl-C
+
+A zoom stops at about 75x on an 80-column view: by then neighbouring pixels
+are 2 Q4.12 steps (2/4096) apart, and deeper would only get blockier.
 """
 import argparse
 import math
@@ -26,12 +31,12 @@ import time
 
 from dm16_host import (
     DEFAULT_PORT, open_dm16, NUM_PE, COLS,
-    ALU_ADD, ALU_SUB, ALU_AND, ALU_OR, ALU_XOR, ALU_MUL, ALU_MULH, ALU_SHRN, ALU_ASRN,
-    SRC_R, SRC_IMM, SRC_MEM, CTX_ALWAYS, CTX_IF_N, CTX_INVERT,
+    ALU_ADD, ALU_SUB, ALU_AND, ALU_OR, ALU_XOR, ALU_MOV, ALU_MUL, ALU_MULH, ALU_SHRN, ALU_ASRN,
+    SRC_R, SRC_IMM, SRC_ID, SRC_MEM, CTX_ALWAYS, CTX_IF_N, CTX_INVERT,
     OP_LDI, OP_MAR, OP_STX, MEM_INC,
     LOOP, ENDL, BANY, LABEL,
     alu, ctx, ldm, stm, put, get, encode_instr, ldi16,
-    read_mem_grid, upload_and_run, write_words,
+    read_mem_grid, upload_and_run,
 )
 
 FRAC = 12                       # Q4.12
@@ -160,16 +165,78 @@ def render(counts, max_iter, color):
     return "\n".join(lines)
 
 
+def setup_program(view):
+    """Per-PE start values, computed on the board: PE (row, col) does pixel
+    (col, row) of each 8 x 8 block, so cr = x0 + col * dx, ci = y0 - row * dy."""
+    qx0, qy0, qdx, qdy = view
+    return [
+        ctx(CTX_ALWAYS),
+        *ldi16(qx0), put(1), *ldi16(qdx), put(2),
+        alu(ALU_MOV, SRC_ID), alu(ALU_AND, SRC_IMM, COLS - 1),            # col
+        alu(ALU_MUL, SRC_R, 2), alu(ALU_ADD, SRC_R, 1), stm(CR0),
+        *ldi16(qy0), put(1), *ldi16(-qdy), put(2),
+        alu(ALU_MOV, SRC_ID), alu(ALU_SHRN, SRC_IMM, COLS.bit_length() - 1),  # row
+        alu(ALU_MUL, SRC_R, 2), alu(ALU_ADD, SRC_R, 1), stm(CIB),
+        *ldi16(qdx * BLOCK), stm(DX8), *ldi16(-qdy * ROWS_PER_BLOCK), stm(DY8),
+    ]
+
+
+def make_view(cx, cy, width, w, h, aspect):
+    """Q4.12 top-left corner and pixel steps, or None if out of range."""
+    qdx = round(width / w * ONE)
+    qdy = round(width / w * aspect * ONE)
+    if qdx < 1 or abs(cx) + width / 2 >= 7 or abs(cy) + qdy * h / ONE / 2 >= 7:
+        return None
+    qx0 = round(cx * ONE) - qdx * (w - 1) // 2
+    qy0 = round(cy * ONE) + qdy * (h - 1) // 2
+    return qx0 & 0xFFFF, qy0 & 0xFFFF, qdx, qdy
+
+
+def compute(ser, view, w, h, max_iter):
+    """Run one image on the board; returns (counts[h][w], seconds on the board)."""
+    bw, bh = w // BLOCK, h // ROWS_PER_BLOCK
+    prog = setup_program(view) + build_program(bw, bh, max_iter)
+    t0 = time.monotonic()
+    upload_and_run(ser, prog, timeout=120)
+    elapsed = time.monotonic() - t0
+    counts = [[0] * w for _ in range(h)]
+    for k in range(bw * bh):
+        by, bx = divmod(k, bw)
+        for pe, n in enumerate(read_mem_grid(ser, RES + k)):
+            counts[by * ROWS_PER_BLOCK + pe // COLS][bx * BLOCK + pe % COLS] = n
+    return counts, elapsed, len(prog)
+
+
+def check(counts, view, max_iter):
+    qx0, qy0, qdx, qdy = view
+    bad = 0
+    for yy, row in enumerate(counts):
+        for xx, got in enumerate(row):
+            exp = model_pixel((qx0 + xx * qdx) & 0xFFFF, (qy0 - yy * qdy) & 0xFFFF, max_iter) & 511
+            if got != exp:
+                bad += 1
+                if bad <= 5:
+                    print(f"  pixel ({xx},{yy}): board {got}, model {exp}")
+    print("check: ALL PASS" if not bad else f"check: {bad} pixels differ")
+    return bad
+
+
+SEAHORSE = "-0.7436,0.1318"     # Seahorse Valley: detail all the way down
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--port", default=DEFAULT_PORT)
     ap.add_argument("--size", default="80x40", help="WxH in characters (multiples of 8)")
-    ap.add_argument("--center", default="-0.65,0.0")
+    ap.add_argument("--center", help=f"default -0.65,0 (still) or {SEAHORSE} (zoom)")
     ap.add_argument("--width", type=float, default=3.0, help="width of the view in the complex plane")
     ap.add_argument("--aspect", type=float, default=2.0, help="character height / width")
-    ap.add_argument("--max-iter", type=int, default=200, help="1..511")
+    ap.add_argument("--max-iter", type=int, default=200, help="1..511 (a zoom raises it as it goes deeper)")
     ap.add_argument("--color", action="store_true", help="ANSI 256-colour blocks")
     ap.add_argument("--check", action="store_true", help="compare every pixel with the Python model")
+    ap.add_argument("--zoom", action="store_true", help="animate a zoom into --center")
+    ap.add_argument("--zoom-factor", type=float, default=0.93, help="width multiplier per frame")
+    ap.add_argument("--loop", action="store_true", help="zoom in and back out until Ctrl-C")
     args = ap.parse_args()
 
     w, h = (int(v) for v in args.size.lower().split("x"))
@@ -177,61 +244,57 @@ def main():
         ap.error(f"size must be a multiple of {BLOCK} x {ROWS_PER_BLOCK}")
     if not 1 <= args.max_iter <= 511:
         ap.error("--max-iter must be 1..511")
-    bw, bh = w // BLOCK, h // ROWS_PER_BLOCK
-    if bw * bh > 0x400 - RES:
+    if (w // BLOCK) * (h // ROWS_PER_BLOCK) > 0x400 - RES:
         ap.error("image too large for the result area")
-    cx, cy = (float(v) for v in args.center.split(","))
-    dx = args.width / w
-    dy = dx * args.aspect
-    if not (q(dx) and abs(cx) + args.width / 2 < 7 and abs(cy) + dy * h / 2 < 7):
+    if not 0 < args.zoom_factor < 1:
+        ap.error("--zoom-factor must be between 0 and 1")
+    cx, cy = (float(v) for v in (args.center or (SEAHORSE if args.zoom else "-0.65,0")).split(","))
+    if make_view(cx, cy, args.width, w, h, args.aspect) is None:
         ap.error("view out of Q4.12 range or too small to resolve")
-    x0, y0 = cx - dx * (w - 1) / 2, cy + dy * (h - 1) / 2       # top-left pixel
-
-    # Per-PE start values: PE (row, col) does pixel (col, row) of each block
-    cr0 = [q(x0 + (pe % COLS) * dx) for pe in range(NUM_PE)]
-    ci0 = [q(y0 - (pe // COLS) * dy) for pe in range(NUM_PE)]
-    dx8 = (q(dx) * BLOCK) & 0xFFFF
-    dy8 = (-q(dy) * ROWS_PER_BLOCK) & 0xFFFF
 
     with open_dm16(args.port) as ser:
-        write_words(ser, CR0, cr0)
-        write_words(ser, CIB, ci0)
-        upload_and_run(ser, [ctx(CTX_ALWAYS), *ldi16(dx8), stm(DX8), *ldi16(dy8), stm(DY8)])
+        if not args.zoom:
+            view = make_view(cx, cy, args.width, w, h, args.aspect)
+            counts, elapsed, n = compute(ser, view, w, h, args.max_iter)
+            print(render(counts, args.max_iter, args.color))
+            print(f"{w}x{h}, {args.max_iter} iterations max, {n} instructions: "
+                  f"{elapsed * 1000:.0f} ms on the board including upload "
+                  f"({sum(map(sum, counts))} pixel-iterations)")
+            return 1 if args.check and check(counts, view, args.max_iter) else 0
 
-        prog = build_program(bw, bh, args.max_iter)
-        t0 = time.monotonic()
-        upload_and_run(ser, prog, timeout=120)
-        elapsed = time.monotonic() - t0
-
-        blocks = [read_mem_grid(ser, RES + k) for k in range(bw * bh)]
-
-    counts = [[0] * w for _ in range(h)]
-    for k, vals in enumerate(blocks):
-        by, bx = divmod(k, bw)
-        for pe, n in enumerate(vals):
-            counts[by * ROWS_PER_BLOCK + pe // COLS][bx * BLOCK + pe % COLS] = n
-
-    print(render(counts, args.max_iter, args.color))
-    iters = sum(map(sum, counts))
-    print(f"{w}x{h}, {args.max_iter} iterations max, {len(prog)} instructions: "
-          f"{elapsed * 1000:.0f} ms on the board including upload ({iters} pixel-iterations)")
-
-    if args.check:
-        bad = 0
-        for yy in range(h):
-            for xx in range(w):
-                bx, px = divmod(xx, BLOCK)
-                by, py = divmod(yy, ROWS_PER_BLOCK)
-                cr = (cr0[px] + bx * dx8) & 0xFFFF
-                ci = (ci0[py * COLS] + by * dy8) & 0xFFFF
-                exp = model_pixel(cr, ci, args.max_iter) & 511
-                if counts[yy][xx] != exp:
-                    bad += 1
-                    if bad <= 5:
-                        print(f"  pixel ({xx},{yy}): board {counts[yy][xx]}, model {exp}")
-        print("check: ALL PASS" if not bad else f"check: {bad} pixels differ")
-        return 1 if bad else 0
-    return 0
+        # Zoom: shrink the width each frame until neighbouring pixels are
+        # 2 Q4.12 steps apart (finer than that the image just gets blocky)
+        widths, width = [], args.width
+        while make_view(cx, cy, width, w, h, args.aspect) and width / w * ONE >= 2:
+            widths.append(width)
+            width *= args.zoom_factor
+        sequence = widths + (widths[-2:0:-1] if args.loop else [])
+        print("\x1b[2J\x1b[?25l", end="")
+        bad = frames = 0
+        t_start = time.monotonic()
+        try:
+            while True:
+                for width in sequence:
+                    depth = math.log2(args.width / width)
+                    max_iter = min(511, round(args.max_iter * (1 + depth / 3)))
+                    view = make_view(cx, cy, width, w, h, args.aspect)
+                    t0 = time.monotonic()
+                    counts, elapsed, _ = compute(ser, view, w, h, max_iter)
+                    frames += 1
+                    print("\x1b[H" + render(counts, max_iter, args.color))
+                    print(f"\x1b[Kzoom {args.width / width:6.1f}x  width {width:.5f}  "
+                          f"{max_iter} iterations max  board {elapsed * 1000:4.0f} ms  "
+                          f"frame {(time.monotonic() - t0) * 1000:4.0f} ms  "
+                          f"({frames / (time.monotonic() - t_start):.1f} fps)")
+                    if args.check:
+                        bad += check(counts, view, max_iter)
+                if not args.loop:
+                    break
+        except KeyboardInterrupt:
+            pass
+        finally:
+            print("\x1b[?25h", end="")
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

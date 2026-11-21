@@ -385,7 +385,7 @@ reliable limit).
 | `dm16_prefix_sum.py` | parallel prefix sum across the hypercube |
 | `dm16_stress.py` | repeated runs to catch rare glitches |
 | `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus |
-| `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--check` to compare every pixel with a Python model |
+| `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--zoom` (and `--loop`) to animate a zoom into Seahorse Valley, `--check` to compare every pixel with a Python model |
 
 ## Source files
 
