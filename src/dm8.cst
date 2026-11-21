@@ -1,0 +1,15 @@
+// Tang Console 138K pins.
+// uart_rx/uart_tx = BL616 USB-C UART (appears as /dev/tang_console_uart, see udev/).
+// leds_n sit on the DONE/READY dual-purpose pins (build with them as GPIO).
+IO_LOC "clk_in" V22;
+IO_PORT "clk_in" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=OFF;
+IO_LOC "key_reset_n" AA13;
+IO_PORT "key_reset_n" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=OFF BANK_VCCIO=3.3;
+IO_LOC "uart_rx" V14;
+IO_PORT "uart_rx" PULL_MODE=UP IO_TYPE=LVCMOS33 BANK_VCCIO=3.3;
+IO_LOC "uart_tx" U15;
+IO_PORT "uart_tx" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33 BANK_VCCIO=3.3;
+IO_LOC "leds_n[0]" G11;
+IO_PORT "leds_n[0]" IO_TYPE=LVCMOS33 DRIVE=4 PULL_MODE=NONE BANK_VCCIO=3.3;
+IO_LOC "leds_n[1]" U12;
+IO_PORT "leds_n[1]" IO_TYPE=LVCMOS33 DRIVE=4 PULL_MODE=NONE BANK_VCCIO=3.3;

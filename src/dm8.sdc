@@ -1,2 +1,2 @@
-// 27 MHz onboard crystal
-create_clock -name clk_27m -period 37.037 -waveform {0 18.518} [get_ports {clk_27m}]
+// 50 MHz board oscillator; the PLL output clock is derived automatically
+create_clock -name clk_in -period 20 -waveform {0 10} [get_ports {clk_in}]

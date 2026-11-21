@@ -1,27 +1,18 @@
+"""
+Conway's Game of Life on the DM8 8x8 NEWS torus (one cell per PE).
+"""
 import serial
 import struct
 import time
 
-# ==============================================================================
-# DM8 Instruction Encoder
-# ==============================================================================
-OP_NOP     = 0x0
-OP_LDI     = 0x1
-OP_LDM     = 0x2
-OP_STM     = 0x3
-OP_ALU     = 0x7
-OP_SWP     = 0x8
-OP_SET_CTX = 0x9
-OP_NEWS    = 0xC
 
-ALU_ADD = 0x0
-ALU_SUB = 0x2
-ALU_MOV = 0x8
-
-NEWS_N = 0x0
-NEWS_E = 0x1
-NEWS_W = 0x2
-NEWS_S = 0x3
+from dm8_host import (
+    DEFAULT_PORT,
+    ROWS, COLS, NUM_PE,
+    OP_ALU, OP_LDI, OP_LDM, OP_NEWS, OP_SET_CTX, OP_STM, OP_SWP,
+    ALU_ADD, ALU_SUB, ALU_MOV, NEWS_N, NEWS_E, NEWS_W, NEWS_S,
+    encode_instr, inject_instr, read_mem_grid,
+)
 
 # Memory Map inside each PE's 1 KB BRAM:
 # 0x000 = Current cell state (0 or 1)
@@ -31,21 +22,12 @@ MEM_STATE = 0x000
 MEM_COUNT = 0x001
 MEM_NEXT  = 0x002
 
-def encode_instr(opcode, sub_op=0, src_sel=0, flag_ctl=0, imm10=0):
-    return (
-        ((opcode & 0xF) << 20)
-        | ((sub_op & 0xF) << 16)
-        | ((src_sel & 0x3) << 14)
-        | ((flag_ctl & 0xF) << 10)
-        | (imm10 & 0x3FF)
-    )
-
 # ==============================================================================
-# Build 1-Generation Parallel Game of Life Program (All 64 PEs in Lockstep)
+# Build 1-Generation Parallel Game of Life Program (All PEs in Lockstep)
 # ==============================================================================
 def build_life_generation_program():
     p = []
-    # Enable all 64 PEs
+    # Enable all PEs
     p.append(encode_instr(OP_SET_CTX, sub_op=0x0, flag_ctl=0x0))
 
     # --- 1. Sum Cardinal Neighbors (N + S + E + W) into MEM_COUNT ---
@@ -107,7 +89,7 @@ def build_life_generation_program():
     p.append(encode_instr(OP_LDI, imm10=1))
     p.append(encode_instr(OP_STM, imm10=MEM_NEXT))
 
-    # Commit MEM_NEXT -> MEM_STATE across all 64 PEs
+    # Commit MEM_NEXT -> MEM_STATE across all PEs
     p.append(encode_instr(OP_SET_CTX, sub_op=0x0, flag_ctl=0x0))
     p.append(encode_instr(OP_LDM, imm10=MEM_NEXT))
     p.append(encode_instr(OP_STM, imm10=MEM_STATE))
@@ -120,24 +102,15 @@ def build_life_generation_program():
 # ==============================================================================
 # Host Loader & Terminal Animator
 # ==============================================================================
-def inject_instr(ser, instr):
-    ser.write(b"\x06" + instr.to_bytes(3, "big"))
-
-def read_mem_grid(ser, addr):
-    inject_instr(ser, encode_instr(OP_SET_CTX, sub_op=0x0, flag_ctl=0x0))
-    inject_instr(ser, encode_instr(OP_LDM, imm10=addr))
-    ser.write(b"\x07")
-    return list(ser.read(64))
-
 def seed_pattern(ser, alive_coords):
-    # Clear all 64 cells to 0
+    # Clear all cells to 0
     inject_instr(ser, encode_instr(OP_SET_CTX, sub_op=0x0, flag_ctl=0x0))
     inject_instr(ser, encode_instr(OP_LDI, imm10=0))
     inject_instr(ser, encode_instr(OP_STM, imm10=MEM_STATE))
 
     # Set initial alive cells to 1
     for (r, c) in alive_coords:
-        pe_id = (r % 8) * 8 + (c % 8)
+        pe_id = (r % ROWS) * COLS + (c % COLS)
         inject_instr(ser, encode_instr(OP_SET_CTX, sub_op=0x6, imm10=pe_id))
         inject_instr(ser, encode_instr(OP_LDI, imm10=1))
         inject_instr(ser, encode_instr(OP_STM, imm10=MEM_STATE))
@@ -146,33 +119,34 @@ def seed_pattern(ser, alive_coords):
 
 def render_grid(gen, grid):
     print(f"\033[H\033[J=== DM8 Connection Machine: Game of Life (Gen {gen}) ===")
-    for r in range(8):
-        line = " ".join("██" if grid[r * 8 + c] else "··" for c in range(8))
+    for r in range(ROWS):
+        line = " ".join("██" if grid[r * COLS + c] else "··" for c in range(COLS))
         print(f"  {line}")
 
-def main(port="/dev/ttyUSB1", generations=40, delay=0.15):
+def main(port=None, generations=40, delay=0.15):
     prog = build_life_generation_program()
 
-    # Classic Glider (period 4, moves diagonally down-right across the 8x8 torus)
-    glider = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
+    # Classic glider (period 4, travels diagonally around the 8x8 torus)
+    pattern = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
 
+    port = port or DEFAULT_PORT
     with serial.Serial(port, 115200, timeout=1) as ser:
         # Upload the 1-generation kernel once into IMEM
         ser.write(b"\x04")
         for addr, instr in enumerate(prog):
             ser.write(struct.pack(">BH", 0x01, addr) + instr.to_bytes(3, "big"))
 
-        seed_pattern(ser, glider)
+        seed_pattern(ser, pattern)
 
         for gen in range(generations + 1):
             grid = read_mem_grid(ser, MEM_STATE)
             render_grid(gen, grid)
             time.sleep(delay)
 
-            # Reset PC to 0 and run 1 generation across all 64 PEs
+            # Reset PC to 0 and run 1 generation across all PEs
             ser.write(b"\x04")
             ser.write(struct.pack(">BH", 0x02, len(prog)))
             time.sleep(0.005)
 
 if __name__ == "__main__":
-    main("/dev/ttyUSB1")
+    main()

@@ -1,103 +1,148 @@
+// One cluster: LANES PEs, each with its own single-port BSRAM (1024 x 16),
+// a LANES-to-1 network injection arbiter and a 1-deep receive mailbox per PE.
+//
+// Packet: {valid, 1'b0, dest[5:0], data[15:0]}
+//   dest = {cluster, lane}; the lane is dest[LANE_BITS-1:0] (bits 16 +: LANE_BITS).
 module dm8_cluster #(
-    parameter [3:0] NODE_ID = 4'd0
+    parameter integer LANES   = 2,       // PEs in this cluster (2 or 4)
+    parameter [5:0]   BASE_ID = 6'd0     // PE_ID of lane 0 (cluster * LANES)
 )(
-    input  wire        clk,
-    input  wire        rst_n,
-    input  wire [23:0] instr,
-    input  wire        instr_valid,
+    input  wire                 clk,
+    input  wire                 rst_n,
+    input  wire [23:0]          instr,
+    input  wire                 instr_valid,
 
-    // NEWS Grid Wires (4 PEs x 8-bit)
-    input  wire [31:0] news_n_in,
-    input  wire [31:0] news_e_in,
-    input  wire [31:0] news_w_in,
-    input  wire [31:0] news_s_in,
-    output wire [31:0] news_out,
+    // NEWS grid (LANES PEs x 16 bits)
+    input  wire [LANES*16-1:0]  news_n_in,
+    input  wire [LANES*16-1:0]  news_e_in,
+    input  wire [LANES*16-1:0]  news_w_in,
+    input  wire [LANES*16-1:0]  news_s_in,
+    output wire [LANES*16-1:0]  news_out,
 
-    // Local Router Interface (4 PEs)
-    output wire [63:0] pe_tx_pkt,
-    output wire [3:0]  pe_tx_valid,
-    input  wire [3:0]  pe_tx_ready,
-    input  wire [63:0] pe_rx_pkt,
-    input  wire [3:0]  pe_rx_valid,
-    output wire [3:0]  pe_rx_pop,
+    // Router local port
+    output reg  [23:0]          rt_in_pkt,
+    output wire                 rt_in_valid,
+    input  wire                 rt_in_ready,
+    input  wire [23:0]          rt_out_pkt,
+    input  wire                 rt_out_valid,
+    output wire                 rt_out_ready,
 
-    // Status & Host Readback
-    output wire [3:0]  ctx_active,
-    output wire [31:0] acc_out
+    // Status & host readback
+    output wire [LANES-1:0]     ctx_active,
+    output wire [LANES*16-1:0]  acc_out
 );
 
-    wire [9:0] mem_addr  [0:3];
-    wire [7:0] mem_wdata [0:3];
-    wire [3:0] mem_we;
-    wire [7:0] mem_rdata [0:3];
+    localparam integer LANE_BITS = (LANES <= 2) ? 1 : 2;
+
+    // Local copy of the broadcast instruction. Every PE sees the sequencer's
+    // instruction one clock later; since everything (memory address, valid,
+    // write-back) shifts together, relative timing is unchanged, and the
+    // long fan-out from the sequencer is kept off the PE/FPU logic paths.
+    reg [23:0] instr_q;
+    reg        instr_valid_q;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            instr_q       <= 24'd0;
+            instr_valid_q <= 1'b0;
+        end else begin
+            instr_q       <= instr;
+            instr_valid_q <= instr_valid;
+        end
+    end
+
+    wire [24*LANES-1:0] tx_pkt;
+    wire [LANES-1:0]    tx_valid;
+    reg  [LANES-1:0]    tx_ready;
+    wire [LANES-1:0]    rx_pop;
+
+    // Receive mailboxes
+    reg  [15:0]         mbox [0:LANES-1];
+    reg  [LANES-1:0]    mbox_full;
+
+    wire [LANE_BITS-1:0] out_lane = rt_out_pkt[16 +: LANE_BITS];
+    assign rt_out_ready = !mbox_full[out_lane];
+
+    integer k;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mbox_full <= {LANES{1'b0}};
+            for (k = 0; k < LANES; k = k + 1)
+                mbox[k] <= 16'd0;
+        end else begin
+            for (k = 0; k < LANES; k = k + 1)
+                if (rx_pop[k]) mbox_full[k] <= 1'b0;
+            if (rt_out_valid && rt_out_ready) begin
+                mbox[out_lane]      <= rt_out_pkt[15:0];
+                mbox_full[out_lane] <= 1'b1;
+            end
+        end
+    end
+
+    // Injection: fixed priority, lowest lane first
+    assign rt_in_valid = |tx_valid;
+    always @(*) begin
+        rt_in_pkt = tx_pkt[23:0];
+        tx_ready  = {LANES{1'b0}};
+        for (k = LANES - 1; k >= 0; k = k - 1)
+            if (tx_valid[k]) rt_in_pkt = tx_pkt[k*24 +: 24];
+        for (k = 0; k < LANES; k = k + 1)
+            tx_ready[k] = rt_in_ready && ((tx_valid & ((1 << k) - 1)) == 0);
+    end
+
+    wire [10*LANES-1:0] mem_addr;
+    wire [16*LANES-1:0] mem_wdata;
+    wire [LANES-1:0]    mem_we;
+    wire [16*LANES-1:0] mem_rdata;
 
     genvar i;
     generate
-        for (i = 0; i < 4; i = i + 1) begin : gen_pe
+        for (i = 0; i < LANES; i = i + 1) begin : gen_pe
             dm8_pe #(
-                .PE_ID({NODE_ID, i[1:0]})
+                .PE_ID(BASE_ID + i)
             ) u_pe (
                 .clk          (clk),
                 .rst_n        (rst_n),
-                .instr        (instr),
-                .instr_valid  (instr_valid),
-                .mem_addr     (mem_addr[i]),
-                .mem_wdata    (mem_wdata[i]),
+                .instr        (instr_q),
+                .instr_valid  (instr_valid_q),
+                .mem_addr     (mem_addr[i*10 +: 10]),
+                .mem_wdata    (mem_wdata[i*16 +: 16]),
                 .mem_we       (mem_we[i]),
-                .mem_rdata    (mem_rdata[i]),
-                .news_n_in    (news_n_in[i*8 +: 8]),
-                .news_e_in    (news_e_in[i*8 +: 8]),
-                .news_w_in    (news_w_in[i*8 +: 8]),
-                .news_s_in    (news_s_in[i*8 +: 8]),
-                .news_out     (news_out[i*8 +: 8]),
-                .net_tx_pkt   (pe_tx_pkt[i*16 +: 16]),
-                .net_tx_valid (pe_tx_valid[i]),
-                .net_tx_ready (pe_tx_ready[i]),
-                .net_rx_pkt   (pe_rx_pkt[i*16 +: 16]),
-                .net_rx_valid (pe_rx_valid[i]),
-                .net_rx_pop   (pe_rx_pop[i]),
+                .mem_rdata    (mem_rdata[i*16 +: 16]),
+                .news_n_in    (news_n_in[i*16 +: 16]),
+                .news_e_in    (news_e_in[i*16 +: 16]),
+                .news_w_in    (news_w_in[i*16 +: 16]),
+                .news_s_in    (news_s_in[i*16 +: 16]),
+                .news_out     (news_out[i*16 +: 16]),
+                .net_tx_pkt   (tx_pkt[i*24 +: 24]),
+                .net_tx_valid (tx_valid[i]),
+                .net_tx_ready (tx_ready[i]),
+                .net_rx_data  (mbox[i]),
+                .net_rx_valid (mbox_full[i]),
+                .net_rx_pop   (rx_pop[i]),
                 .ctx_active   (ctx_active[i]),
-                .acc_out      (acc_out[i*8 +: 8])
+                .acc_out      (acc_out[i*16 +: 16])
             );
-        end
-    endgenerate
 
-    // 2 Gowin True Dual-Port BRAMs (DPB) for 4 PEs (14-bit address ports)
-    genvar b;
-    generate
-        for (b = 0; b < 2; b = b + 1) begin : gen_dpb
-            wire [15:0] doa_unused, dob_unused;
+            // Single-port BSRAM, 16-bit mode: AD[13:4] = word, AD[1:0] = byte enables
+            wire [31:0] do_full;
+            assign mem_rdata[i*16 +: 16] = do_full[15:0];
 
-            DPB #(
-                .READ_MODE0 (1'b0),
-                .READ_MODE1 (1'b0),
-                .WRITE_MODE0(2'b00),
-                .WRITE_MODE1(2'b00),
-                .BIT_WIDTH_0(8),
-                .BIT_WIDTH_1(8),
-                .BLK_SEL_0  (3'b000),
-                .BLK_SEL_1  (3'b000),
+            SP #(
+                .READ_MODE  (1'b0),
+                .WRITE_MODE (2'b00),
+                .BIT_WIDTH  (16),
+                .BLK_SEL    (3'b000),
                 .RESET_MODE ("SYNC")
-            ) u_dpb (
-                .CLKA   (clk),
-                .OCEA   (1'b1),
-                .CEA    (1'b1),
-                .RESETA (~rst_n),
-                .WREA   (mem_we[b*2]),
-                .BLKSELA(3'b000),
-                .ADA    ({1'b0, mem_addr[b*2], 3'b000}),
-                .DIA    ({8'd0, mem_wdata[b*2]}),
-                .DOA    ({doa_unused[15:8], mem_rdata[b*2]}),
-
-                .CLKB   (clk),
-                .OCEB   (1'b1),
-                .CEB    (1'b1),
-                .RESETB (~rst_n),
-                .WREB   (mem_we[b*2 + 1]),
-                .BLKSELB(3'b000),
-                .ADB    ({1'b1, mem_addr[b*2 + 1], 3'b000}),
-                .DIB    ({8'd0, mem_wdata[b*2 + 1]}),
-                .DOB    ({dob_unused[15:8], mem_rdata[b*2 + 1]})
+            ) u_sp (
+                .DO     (do_full),
+                .DI     ({16'd0, mem_wdata[i*16 +: 16]}),
+                .BLKSEL (3'b000),
+                .AD     ({mem_addr[i*10 +: 10], 2'b00, 2'b11}),
+                .WRE    (mem_we[i]),
+                .CLK    (clk),
+                .CE     (1'b1),
+                .OCE    (1'b1),
+                .RESET  (~rst_n)
             );
         end
     endgenerate
