@@ -34,12 +34,14 @@ module dm8_cluster #(
 
     localparam integer LANE_BITS = (LANES <= 2) ? 1 : 2;
 
-    // Local copy of the broadcast instruction. Every PE sees the sequencer's
-    // instruction one clock later; since everything (memory address, valid,
-    // write-back) shifts together, relative timing is unchanged, and the
-    // long fan-out from the sequencer is kept off the PE/FPU logic paths.
-    reg [23:0] instr_q;
-    reg        instr_valid_q;
+    // Instruction broadcast pipeline: one copy per cluster, then one per PE.
+    // Every PE sees the sequencer's instruction two clocks later; since
+    // everything (memory address, valid, write-back) shifts together, the
+    // instruction rate and all relative timing are unchanged. Each register
+    // only drives nearby logic, which keeps the 64-way fan-out off the PE
+    // paths. syn_preserve stops synthesis merging the copies back together.
+    (* syn_preserve = 1 *) reg [23:0] instr_q;
+    (* syn_preserve = 1 *) reg        instr_valid_q;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             instr_q       <= 24'd0;
@@ -97,13 +99,25 @@ module dm8_cluster #(
     genvar i;
     generate
         for (i = 0; i < LANES; i = i + 1) begin : gen_pe
+            (* syn_preserve = 1 *) reg [23:0] instr_pe;
+            (* syn_preserve = 1 *) reg        instr_valid_pe;
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    instr_pe       <= 24'd0;
+                    instr_valid_pe <= 1'b0;
+                end else begin
+                    instr_pe       <= instr_q;
+                    instr_valid_pe <= instr_valid_q;
+                end
+            end
+
             dm8_pe #(
                 .PE_ID(BASE_ID + i)
             ) u_pe (
                 .clk          (clk),
                 .rst_n        (rst_n),
-                .instr        (instr_q),
-                .instr_valid  (instr_valid_q),
+                .instr        (instr_pe),
+                .instr_valid  (instr_valid_pe),
                 .mem_addr     (mem_addr[i*10 +: 10]),
                 .mem_wdata    (mem_wdata[i*16 +: 16]),
                 .mem_we       (mem_we[i]),

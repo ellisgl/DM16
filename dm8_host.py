@@ -9,7 +9,9 @@ torus), 16-bit datapath, bfloat16 FPU in every PE, 1024 x 16-bit words of
 memory per PE.
 
 The serial port defaults to /dev/tang_console_uart (udev symlink, see
-udev/85-tang-console-138k.rules); override it with DM8_PORT.
+udev/85-tang-console-138k.rules); override it with DM8_PORT. The link comes
+up at 115200 baud after every FPGA reset; open_dm8() switches both ends to
+DM8_BAUD (default 2 Mbaud) and closing the port switches back to 115200.
 """
 import os
 import struct
@@ -22,6 +24,10 @@ DIMS  = 4                         # hypercube dimensions between clusters
 LANES = 4                         # PEs per cluster
 COLS  = 8                         # NEWS torus width
 DEFAULT_PORT = os.environ.get("DM8_PORT", "/dev/tang_console_uart")
+SYS_CLK_HZ   = 50_000_000         # must match src/dm8_top.v (1200 MHz / ODIV)
+BOOT_BAUD    = 115_200            # FPGA UART rate after reset
+DEFAULT_BAUD = int(os.environ.get("DM8_BAUD", "2000000"))
+MAX_BAUD     = 2_000_000          # the console's USB-UART bridge drops bytes above this
 NUM_PE  = (1 << DIMS) * LANES     # PEs
 ROWS    = NUM_PE // COLS          # NEWS torus height
 PE_DIMS = DIMS + (LANES - 1).bit_length()   # bits in a PE_ID
@@ -45,7 +51,9 @@ OP_SEND = 0xA   # send b
 OP_RECV = 0xB   # b = mailbox, C = got one
 OP_NEWS = 0xC   # acc = neighbour's acc
 OP_FPU  = 0xD
+OP_SEQ  = 0xF   # sequencer control (never sent to the PEs)
 OP_SET_CTX = OP_CTX
+IMEM_SIZE = 4096
 
 LDI_FULL, LDI_HI, LDI_LO = 0, 1, 2
 
@@ -126,6 +134,77 @@ def send(dest, mode=DEST_IMM):
     return encode_instr(OP_SEND, src_sel=mode, imm10=dest)
 
 
+# ==============================================================================
+# Sequencer control + a tiny assembler with labels
+#
+#   prog = [LOOP(10), alu(ALU_ADD, SRC_IMM, 1), ENDL,
+#           LABEL("top"), ..., BANY("top"), HALT]
+#   upload_and_run(ser, prog)        # labels are resolved automatically
+# ==============================================================================
+SEQ_LOOP, SEQ_ENDL, SEQ_JMP, SEQ_BANY, SEQ_BNONE, SEQ_HALT = 0, 1, 2, 3, 4, 5
+
+
+def _seq(op, field=0):
+    return (OP_SEQ << 20) | (op << 16) | (field & 0xFFFF)
+
+
+class LABEL:
+    def __init__(self, name):
+        self.name = name
+
+
+class _Branch:
+    def __init__(self, op, target):
+        self.op, self.target = op, target
+
+
+def LOOP(n):
+    """Run the following instructions up to the matching ENDL n times (1..65535)."""
+    if not 1 <= n <= 0xFFFF:
+        raise ValueError("loop count must be 1..65535")
+    return _seq(SEQ_LOOP, n)
+
+
+ENDL = _seq(SEQ_ENDL)
+HALT = _seq(SEQ_HALT)
+
+
+def JMP(target):
+    return _Branch(SEQ_JMP, target)
+
+
+def BANY(target):
+    """Branch if any PE is active (global OR of the context flags)."""
+    return _Branch(SEQ_BANY, target)
+
+
+def BNONE(target):
+    """Branch if no PE is active."""
+    return _Branch(SEQ_BNONE, target)
+
+
+def assemble(items):
+    """Resolve LABELs and branch targets; returns a list of 24-bit words."""
+    labels, addr = {}, 0
+    for it in items:
+        if isinstance(it, LABEL):
+            if it.name in labels:
+                raise ValueError(f"duplicate label {it.name!r}")
+            labels[it.name] = addr
+        else:
+            addr += 1
+    out = []
+    for it in items:
+        if isinstance(it, LABEL):
+            continue
+        if isinstance(it, _Branch):
+            tgt = labels[it.target] if isinstance(it.target, str) else it.target
+            out.append(_seq(it.op, tgt))
+        else:
+            out.append(it)
+    return out
+
+
 NOP  = encode_instr(OP_NOP)
 SWP  = encode_instr(OP_SWP)
 RECV = encode_instr(OP_RECV)
@@ -156,6 +235,94 @@ def to_signed(v):
 # ==============================================================================
 # UART helpers
 # ==============================================================================
+def _set_fpga_divider(ser, divider):
+    ser.write(bytes([0x08, divider >> 8, divider & 0xFF]))
+    ser.flush()
+    # flush() only drains the OS buffer; give the USB-UART bridge time to
+    # send the bytes before the host side changes rate
+    time.sleep(0.03)
+
+
+def open_dm8(port=None, baud=None):
+    """Open the DM8 UART and switch both ends to `baud` (default DM8_BAUD).
+
+    The FPGA always boots at 115200, and closing the returned port (or
+    leaving a `with` block) switches it back to 115200, so every session
+    starts from a known rate. If a script died before closing, the last
+    rate used is remembered and tried too. If the link is ever lost, press
+    the board's reset button (or reload the bitstream) to return to 115200.
+    """
+    import serial
+
+    class _DM8Serial(serial.Serial):
+        def close(self):
+            if self.is_open and self.baudrate != BOOT_BAUD:
+                try:
+                    _set_fpga_divider(self, round(SYS_CLK_HZ / BOOT_BAUD))
+                    _remember_baud(BOOT_BAUD)
+                except Exception:
+                    pass
+            super().close()
+
+    port = port or DEFAULT_PORT
+    baud = baud or DEFAULT_BAUD
+    if baud > MAX_BAUD:
+        raise ValueError(f"{baud} baud is above the bridge's reliable limit ({MAX_BAUD})")
+    divider = round(SYS_CLK_HZ / baud)
+    if abs(SYS_CLK_HZ / divider - baud) / baud > 0.02:
+        raise ValueError(f"{baud} baud is not reachable from {SYS_CLK_HZ} Hz "
+                         f"(nearest {SYS_CLK_HZ / divider:.0f})")
+    ser = _DM8Serial(port, baud, timeout=0.2)
+    try:
+        ser.set_low_latency_mode(True)     # FTDI latency timer -> 1 ms
+    except Exception:
+        pass
+
+    def answers():
+        ser.baudrate = baud
+        ser.reset_input_buffer()
+        return len(read_ctx_mask_bytes(ser)) == (NUM_PE + 7) // 8
+
+    if not answers():
+        for rate in dict.fromkeys([BOOT_BAUD, _last_baud()]):
+            if rate == baud:
+                continue
+            time.sleep(0.005)       # let the FPGA's command timeout clear junk
+            ser.baudrate = rate
+            _set_fpga_divider(ser, divider)
+            if answers():
+                break
+        else:
+            serial.Serial.close(ser)
+            raise RuntimeError(f"DM8 did not answer at {baud} baud on {port} "
+                               "(press the board's reset button to return it to 115200)")
+    _remember_baud(baud)
+    ser.timeout = 1
+    return ser
+
+
+_BAUD_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "dm8_last_baud")
+
+
+def _last_baud():
+    try:
+        with open(_BAUD_FILE) as f:
+            return int(f.read())
+    except (OSError, ValueError):
+        return BOOT_BAUD
+
+
+def _remember_baud(baud):
+    try:
+        with open(_BAUD_FILE, "w") as f:
+            f.write(str(baud))
+    except OSError:
+        pass
+
+
+def read_ctx_mask_bytes(ser):
+    ser.write(b"\x05")
+    return ser.read((NUM_PE + 7) // 8)
 def inject_instr(ser, instr):
     """Execute one instruction immediately on all PEs."""
     ser.write(b"\x06" + instr.to_bytes(3, "big"))
@@ -183,10 +350,30 @@ def read_mem_grid(ser, addr):
     return read_acc_grid(ser)
 
 
-def upload_and_run(ser, program):
-    """Load a program into instruction memory (max 512) and run it."""
-    if len(program) > 512:
-        raise ValueError(f"program has {len(program)} instructions (max 512)")
+def read_status(ser):
+    """Return (running, any_active) from the sequencer."""
+    ser.write(b"\x09")
+    b = ser.read(1)
+    if len(b) != 1:
+        raise RuntimeError("no status byte from DM8")
+    return bool(b[0] & 1), bool(b[0] & 2)
+
+
+def wait_idle(ser, timeout=10.0):
+    """Wait until the sequencer has finished running its program."""
+    t_end = time.monotonic() + timeout
+    while read_status(ser)[0]:
+        if time.monotonic() > t_end:
+            raise TimeoutError("DM8 program still running")
+        time.sleep(0.001)
+
+
+def upload_and_run(ser, program, timeout=10.0):
+    """Load a program (labels allowed) into instruction memory and run it
+    to completion (end of program or HALT)."""
+    program = assemble(program)
+    if len(program) > IMEM_SIZE:
+        raise ValueError(f"program has {len(program)} instructions (max {IMEM_SIZE})")
     ser.write(b"\x04")                       # halt / reset PC
     time.sleep(0.005)
     payload = bytearray()
@@ -195,8 +382,10 @@ def upload_and_run(ser, program):
     payload += struct.pack(">BH", 0x02, len(program))
     ser.write(payload)
     ser.flush()
-    # 6 bytes/instr at 115200 baud ~ 0.52 ms/instr, plus margin for execution
-    time.sleep(len(program) * 0.0006 + 0.02)
+    # Wait for the bytes to drain (10 bits each, plus 15% margin), then
+    # until the program has finished
+    time.sleep(len(payload) * 10 * 1.15 / ser.baudrate + 0.002)
+    wait_idle(ser, timeout)
 
 
 def per_pe_words_program(addr, values):

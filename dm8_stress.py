@@ -23,7 +23,7 @@ import time
 import serial
 
 from dm8_host import (
-    DEFAULT_PORT,
+    DEFAULT_PORT, open_dm8,
     NUM_PE, OP_ALU, OP_LDI, OP_LDM, OP_SET_CTX, OP_STM, ALU_ADD, ALU_AND,
     encode_instr, inject_instr, read_mem_grid, upload_and_run, print_grid,
 )
@@ -61,7 +61,7 @@ def main():
     args = ap.parse_args()
     n = min(args.n, 255)
 
-    with serial.Serial(args.port, 115200, timeout=1) as ser:
+    with open_dm8(args.port) as ser:
         inject_instr(ser, encode_instr(OP_SET_CTX, sub_op=0x0))
         inject_instr(ser, encode_instr(OP_LDI, imm10=0))
         inject_instr(ser, encode_instr(OP_STM, imm10=MEM_A))

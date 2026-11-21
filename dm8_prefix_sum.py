@@ -12,7 +12,7 @@ Per dimension d, every PE at once (CM-2 style "cube swap"):
 import serial
 
 from dm8_host import (
-    DEFAULT_PORT,
+    DEFAULT_PORT, open_dm8,
     NUM_PE, PE_DIMS,
     ALU_ADD, ALU_AND, ALU_MOV, SRC_B, SRC_ID, SRC_IMM, CTX_ALWAYS, CTX_IF_NZ, DEST_XOR,
     NOP, RECV, SWP, alu, ctx, ldm, stm, send, ldi16,
@@ -43,7 +43,7 @@ def stage_program(dim):
 
 def main(port=None):
     port = port or DEFAULT_PORT
-    with serial.Serial(port, 115200, timeout=1) as ser:
+    with open_dm8(port) as ser:
         inject_instr(ser, ctx(CTX_ALWAYS))
         for ins in ldi16(1):
             inject_instr(ser, ins)

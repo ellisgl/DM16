@@ -7,7 +7,7 @@ import time
 
 
 from dm8_host import (
-    DEFAULT_PORT,
+    DEFAULT_PORT, open_dm8,
     ROWS, COLS, NUM_PE,
     OP_ALU, OP_LDI, OP_LDM, OP_NEWS, OP_SET_CTX, OP_STM, OP_SWP,
     ALU_ADD, ALU_SUB, ALU_MOV, NEWS_N, NEWS_E, NEWS_W, NEWS_S,
@@ -130,7 +130,7 @@ def main(port=None, generations=40, delay=0.15):
     pattern = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
 
     port = port or DEFAULT_PORT
-    with serial.Serial(port, 115200, timeout=1) as ser:
+    with open_dm8(port) as ser:
         # Upload the 1-generation kernel once into IMEM
         ser.write(b"\x04")
         for addr, instr in enumerate(prog):

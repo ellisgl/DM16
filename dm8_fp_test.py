@@ -17,7 +17,7 @@ import serial
 
 import dm8_bf16_ref as ref
 from dm8_host import (
-    DEFAULT_PORT,
+    DEFAULT_PORT, open_dm8,
     NUM_PE,
     ALU_ASR, ALU_MOV, ALU_MUL, ALU_SUB, SRC_ID, SRC_IMM, SRC_MEM, MEM_MAR, MEM_INC,
     CTX_ALWAYS, CTX_IF_N,
@@ -58,7 +58,7 @@ def main():
     arr = [[rng.getrandbits(16) for _ in range(NUM_PE)] for _ in range(4)]
     ok = True
 
-    with serial.Serial(args.port, 115200, timeout=1) as ser:
+    with open_dm8(args.port) as ser:
         write_words(ser, A, a)
         write_words(ser, B, b)
         for k in range(4):

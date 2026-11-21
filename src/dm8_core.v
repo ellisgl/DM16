@@ -32,6 +32,8 @@ module dm8_core #(
     wire                instr_valid;
     wire [NUM_PE-1:0]   all_ctx;
     wire [NUM_PE*W-1:0] all_acc;
+    reg  [NODES-1:0]    cluster_any;   // global OR, stage 1
+    reg                 any_active;    // global OR, stage 2 (to the sequencer)
 
     // 1. UART host loader & global SIMD sequencer
     dm8_uart_seq #(
@@ -46,8 +48,23 @@ module dm8_core #(
         .instr_valid   (instr_valid),
         .running       (running),
         .all_ctx       (all_ctx),
-        .all_acc       (all_acc)
+        .all_acc       (all_acc),
+        .any_active    (any_active)
     );
+
+    // Global OR of every PE's context flag (CM-2 style), two register stages:
+    // one OR per cluster, then the OR of the clusters.
+    integer c;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            cluster_any <= {NODES{1'b0}};
+            any_active  <= 1'b0;
+        end else begin
+            for (c = 0; c < NODES; c = c + 1)
+                cluster_any[c] <= |all_ctx[c*LANES +: LANES];
+            any_active <= |cluster_any;
+        end
+    end
 
     // 2. NEWS toroidal grid
     wire [NUM_PE*W-1:0] news_out_flat;
