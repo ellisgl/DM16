@@ -1,3 +1,4 @@
+`timescale 1ns/1ns
 // Tang Console 138K (GW5AST-138) system clock:
 //   50 MHz in -> VCO 1200 MHz (x24) -> CLKOUT0 = 1200 / ODIV MHz
 // PLL_INIT (pll_init.v, from Gowin's generated IP) calibrates the charge

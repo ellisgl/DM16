@@ -1,3 +1,4 @@
+`timescale 1ns/1ns
 // DM16 array core: sequencer + clusters + hypercube network + NEWS torus.
 // Board independent - the board top supplies the clock, reset and pins.
 //

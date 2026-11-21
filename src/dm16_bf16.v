@@ -1,3 +1,4 @@
+`timescale 1ns/1ns
 // bfloat16 arithmetic unit (one per PE), 3 register stages.
 //
 //   edge N   : s0 registers capture op, a, b (when start = 1)

@@ -1,3 +1,4 @@
+`timescale 1ns/1ns
 // DM16 on the Tang Console 138K (GW5AST-138):
 // 64 PEs (16 clusters x 4, 4-D hypercube, 8x8 NEWS torus).
 // Keep the geometry in sync with dm16_host.py.

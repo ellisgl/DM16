@@ -1,0 +1,416 @@
+# DM16
+
+DM16 is a small massively parallel computer in the style of the Thinking
+Machines **Connection Machine**, built in an FPGA. A single sequencer
+broadcasts each instruction to **64 processing elements (PEs)**, which all
+execute it at the same time on their own data (SIMD). Each PE has a 16-bit
+integer ALU, a **bfloat16 floating-point unit**, eight registers, and 2 KB of
+private memory. The PEs talk to each other over two networks: a nearest-neighbour
+**NEWS grid** and a **4-D hypercube** packet router. A host PC loads programs
+and data over USB serial and reads the results back.
+
+It runs on the Sipeed **Tang Console 138K** (Gowin GW5AST-138) at 50 MHz.
+
+![The Mandelbrot set computed on DM16, shown in the terminal](docs/mandelbrot.png)
+
+*The Mandelbrot set from `dm16_mandelbrot.py --color`: 64 pixels at a time,
+one per PE, looping with `BANY` until every PE's point has escaped. The whole
+96 × 48 image is a 78-instruction program and takes 25 ms on the board.*
+
+| | |
+|---|---|
+| PEs | 64: 16 clusters × 4 PEs |
+| Datapath | 16-bit; every value is an int16 or a bfloat16 |
+| Per PE | `acc`, `r0`–`r7` (`r0` is `b`), 10-bit `mar`, C/Z/N flags, 4-deep context stack, 1024 × 16-bit memory |
+| Arithmetic | add/sub/logic, 16 × 16 multiply (low and high halves), barrel shifts, rotates and funnel shifts; bf16 add/sub/mul/compare/convert |
+| Networks | NEWS: 8 × 8 torus, 1 clock per hop. Hypercube: 4 dimensions between clusters, e-cube routing |
+| Sequencer | 4096-instruction program memory, nested hardware loops, jumps, branches on a global OR of all PEs |
+| Host link | UART over the board's USB port, 115200 baud at reset, 2 Mbaud in normal use |
+| Clock | 50 MHz from the on-chip PLL |
+| Peak rate | 25 M instructions/s × 64 PEs = 1.6 G 16-bit operations/s |
+
+## What is it good for?
+
+### Does it run DOOM?
+
+No. DOOM needs a general-purpose CPU: one fast thread of branchy,
+pointer-chasing code, several megabytes of memory for the game data, and a
+screen. DM16 is the opposite kind of machine. It has 64 small PEs that all run
+the *same* instruction, 128 KB of memory in total (2 KB per PE), room for 4096
+instructions, and no video output. Its only link to the outside world is a
+serial port that moves about 200 KB/s, so it couldn't even receive DOOM's
+frames fast enough: a 320 × 200 frame is 64 KB, and DOOM wants 35 of them a
+second.
+
+What it *could* do in principle is the part of a 3-D renderer that is
+genuinely parallel: in a Wolfenstein-style ray caster, each PE could trace the
+ray for one screen column, 64 columns at once. Nobody has written that yet.
+
+### What it is good at
+
+DM16 shines when the same small calculation has to be done on lots of pieces
+of data at once, especially when each piece only needs to talk to its
+neighbours:
+
+* **Cellular automata and grid simulations:** Game of Life (included),
+  heat diffusion, wave equations, sandpiles, lattice-gas fluids. Each PE owns
+  a cell or a small tile and swaps edges with its neighbours over the NEWS
+  grid in one instruction.
+* **Image processing on small tiles:** blurs, edge detection, thresholding,
+  morphology, one pixel or tile per PE.
+* **Parallel algorithms on the hypercube:** prefix sums (included),
+  reductions, bitonic sort, FFT butterflies, matrix transposes. These are the
+  textbook Connection Machine algorithms, and the "cube swap" `SEND` does
+  their communication step in one instruction.
+* **Monte Carlo simulations:** each PE runs its own random-number generator
+  (xorshift is three shift/XOR pairs with the barrel shifter) and its own
+  trials; the host adds up the results.
+* **Small neural networks and signal processing:** bfloat16 multiply-add,
+  dot products with the running sum in a register, and Q8.8 fixed point for
+  filters.
+* **Data-dependent loops:** the global OR lets a program iterate until every
+  PE has finished, as in escape-time fractals (the Mandelbrot demo, included),
+  root finding or iterative solvers.
+
+### What it is not good at
+
+* **Raw speed.** Its peak of 1.6 G 16-bit operations a second is far below a
+  modern laptop CPU, let alone a GPU. DM16 is interesting for *how* it
+  computes, not how fast.
+* **Different work on different PEs.** Every PE runs the same instruction.
+  PEs whose condition is false sit idle, so heavily branching code wastes most
+  of the machine.
+* **Big data sets.** 2 KB per PE, and the serial link limits how fast data
+  can come in and go out.
+
+### Practical uses
+
+* **Learning parallel computing.** It is a real, working SIMD machine small
+  enough to understand completely, from the instruction set down to the
+  Verilog. Masked execution, global reductions, nearest-neighbour and
+  hypercube communication are all here in a few thousand lines.
+* **Exploring computer history.** It works much like the Connection Machine
+  CM-1/CM-2 of the 1980s, a 64-PE miniature of a 65,536-processor
+  supercomputer, so classic papers and algorithms can be tried out for real.
+* **Prototyping SIMD algorithms and hardware ideas.** New instructions,
+  networks or memory layouts can be added and measured on real hardware;
+  the register file and barrel shifter were added this way.
+* **A building block in a bigger FPGA design.** Fed directly from a camera,
+  ADC or sensor interface in the same FPGA, instead of the slow serial link,
+  the array could filter or analyse data in real time.
+
+## How it works
+
+### The big picture
+
+```mermaid
+flowchart LR
+    host["Host PC<br/>dm16_host.py"] <-->|USB serial| bridge["BL616<br/>USB-UART"]
+    bridge <-->|UART| seq
+
+    subgraph fpga["FPGA (GW5AST-138)"]
+        seq["Command decoder<br/>+ program memory 4096 × 24<br/>+ sequencer"]
+        seq -->|"instruction broadcast<br/>(2 pipeline stages)"| array
+        array -->|"global OR of context flags"| seq
+        array -->|"acc / context readback"| seq
+
+        subgraph array["PE array: 16 clusters × 4 PEs"]
+            direction TB
+            c0["Cluster 0<br/>PE 0–3"]
+            c1["Cluster 1<br/>PE 4–7"]
+            cdots["…"]
+            c15["Cluster 15<br/>PE 60–63"]
+        end
+    end
+```
+
+1. The host writes a program into the sequencer's program memory and starts
+   it, or injects single instructions directly.
+2. The sequencer fetches one instruction at a time. Control instructions
+   (loops, jumps, branches, `HALT`) are executed by the sequencer itself.
+   Everything else is broadcast to all 64 PEs.
+3. Every PE executes the broadcast instruction on its own registers and
+   memory, unless its **context flag** is off, in which case it ignores the
+   instruction. This is how a SIMD machine does `if`: the PEs evaluate a
+   condition, the ones where it is false switch themselves off, and the rest
+   carry on.
+4. The sequencer can test whether **any** PE is still active (a global OR of
+   all 64 context flags). That lets a program loop until every PE is done,
+   for example in an escape-time fractal or an iterative solver.
+5. The host reads results back as each PE's `acc`, or a memory word from every
+   PE at once.
+
+### Inside a cluster
+
+Each cluster holds four PEs, their memories, and the network hardware they
+share.
+
+```mermaid
+flowchart TB
+    bcast["instruction from the sequencer"] --> iq["cluster instruction register<br/>(instr_q)"]
+    iq --> ip0["PE copy"] & ip1["PE copy"] & ip2["PE copy"] & ip3["PE copy"]
+    iq -. "instr_next<br/>(early decode)" .-> pe0 & pe1 & pe2 & pe3
+    ip0 --> pe0["PE"]
+    ip1 --> pe1["PE"]
+    ip2 --> pe2["PE"]
+    ip3 --> pe3["PE"]
+    pe0 <--> m0["BSRAM<br/>1024 × 16"]
+    pe1 <--> m1["BSRAM<br/>1024 × 16"]
+    pe2 <--> m2["BSRAM<br/>1024 × 16"]
+    pe3 <--> m3["BSRAM<br/>1024 × 16"]
+    pe0 & pe1 & pe2 & pe3 -->|SEND| arb["4-to-1 injection arbiter"]
+    arb --> rt["hypercube router<br/>4 links"]
+    rt --> mbox["one-word mailbox per PE"]
+    mbox -->|RECV| pe0 & pe1 & pe2 & pe3
+```
+
+The instruction passes through two register stages on its way to a PE: one
+per cluster, then one per PE. Each register only drives logic close to it,
+which keeps the 64-way broadcast from limiting the clock speed. Every PE sees
+the same instruction on the same clock.
+
+### The processing element
+
+```mermaid
+flowchart LR
+    subgraph early["clock before execute"]
+        dec["decode<br/>(one-hot selects)"]
+        opsel{"operand B<br/>select"}
+        rf["r0 (= b) … r7"] --> opsel
+        imm["immediate"] --> opsel
+        id["PE_ID"] --> opsel
+        mem["memory word"] --> opsel
+    end
+    opsel --> opb["op_b"]
+    acc["acc"] --> alu["integer ALU<br/>add · logic · shifts"]
+    opb --> alu
+    acc --> mul["16 × 16 multiplier<br/>(DSP)"]
+    opb --> mul
+    acc --> fpu["bfloat16 FPU<br/>add · sub · mul"]
+    opb --> fpu
+    alu --> mux{"acc input<br/>(flat AND-OR)"}
+    dec --> mux
+    mul -->|"next clock"| mux
+    fpu -->|"2 clocks later"| mux
+    news["NEWS neighbours"] --> mux
+    mem2["memory word"] --> mux
+    mux --> acc
+    acc -->|STM / STX| bsram["local memory"]
+    acc -->|PUT / SWP| rf
+```
+
+It is an **accumulator machine**: almost every operation is
+`acc = acc OP operand`. The operand comes from a register, an immediate, the
+PE's own ID, or local memory.
+
+### Instruction timing
+
+The sequencer issues at most one instruction every two clocks, and the PE
+design relies on that idle clock:
+
+```
+clock          1          2          3          4
+             ┌──────────┬──────────┬──────────┬──────────┐
+instr_next   │  ADD r3  │          │   MUL    │          │
+instr        │          │  ADD r3  │  (idle)  │   MUL    │ …
+PE work      │ decode,  │ execute: │ set Z/N  │ execute  │
+             │ read r3  │ acc +=   │ from acc │          │
+             │ → op_b   │ op_b     │          │          │
+             └──────────┴──────────┴──────────┴──────────┘
+```
+
+* **Before execute:** the PE decodes the next instruction (it is visible one
+  clock early on `instr_next`) and loads operand B into a register.
+* **Execute:** `acc` is updated from a flat AND-OR of all possible results,
+  selected by the pre-decoded one-hot signals.
+* **Idle clock:** `MUL`/`MULH` write their registered product to `acc`, and
+  ALU ops set the Z and N flags from the new `acc`.
+
+So most instructions take **2 clocks**. Instructions that read memory take 4,
+because the block RAM read needs two extra clocks. `FADD`, `FSUB`, `FMUL` and
+`FI2F` take one extra clock, because the FPU result arrives two clocks after
+execute.
+
+### Networks
+
+**NEWS grid.** The 64 PEs form an 8 × 8 torus: PE `i` sits at row `i / 8`,
+column `i % 8`, and the edges wrap round. `NEWS N` (or E, W, S) copies the
+neighbour's `acc` into this PE's `acc`, on every PE at once, in one
+instruction. It suits image filters, cellular automata and stencils;
+`dm16_life.py` runs Conway's Game of Life with one cell per PE.
+
+```
+        col 0   1   2   3   4   5   6   7
+row 0      0   1   2   3   4   5   6   7     N
+row 1      8   9  10  11  12  13  14  15   W ✛ E
+ …                                           S
+row 7     56  57  58  59  60  61  62  63    (edges wrap round)
+```
+
+**Hypercube router.** The 16 clusters are the corners of a 4-dimensional
+hypercube: two clusters are linked when their numbers differ in exactly one
+bit, so any packet needs at most 4 hops. Each link is 4 bits wide, and a
+24-bit packet crosses it in 6 beats. Routing is dimension-ordered ("e-cube"),
+which cannot deadlock. A PE sends `b` to any other PE with `SEND`. The
+destination can be fixed, taken from `acc`, or `PE_ID XOR mask` (the classic
+"cube swap" used by parallel prefix sums and FFTs). `RECV` takes the word
+from the PE's one-word mailbox and sets C if one was waiting.
+
+```
+PE_ID (6 bits):   [ cluster: 4 bits | lane: 2 bits ]
+                     hypercube corner   PE within the cluster
+```
+
+## Instruction set
+
+Instructions are 24 bits wide:
+
+```
+ 23    20 19    16 15  14 13      10 9                   0
+┌────────┬────────┬──────┬──────────┬─────────────────────┐
+│ opcode │ sub_op │ src  │ flag_ctl │        imm10        │
+└────────┴────────┴──────┴──────────┴─────────────────────┘
+```
+
+**Operand B** (`src`, for ALU and FPU ops): `0` register `r[imm & 7]`
+(`r0` is `b`) · `1` sign-extended `imm10` · `2` `PE_ID` · `3` memory word.
+
+**Memory address** (any instruction that touches memory): `imm10`, or `mar`
+when `flag_ctl` bit 0 is set. `flag_ctl` bit 1 post-increments `mar`.
+`LDX`/`STX` always use `mar`.
+
+| Op | Name | Effect |
+|---|---|---|
+| 0 | `NOP` | |
+| 1 | `LDI` | sub 0: `acc = sext(imm10)`; 1: `acc[15:8] = imm8`; 2: `acc[7:0] = imm8` |
+| 2 / 3 | `LDM` / `STM` | `acc = mem[addr]` / `mem[addr] = acc` |
+| 4 / 5 | `LDX` / `STX` | `acc = mem[mar]` / `mem[mar] = acc` |
+| 6 | `MAR` | `mar = acc` (src 0) or `imm10` |
+| 7 | `ALU` | `acc = acc OP operand`, see below |
+| 8 | `SWP` | sub 0: `acc ↔ r[n]`; 1 `PUT`: `r[n] = acc`; 2 `GET`: `acc = r[n]` |
+| 9 | `CTX` | set, push, pop or invert the context flag (see below) |
+| A | `SEND` | send `b` to PE `imm`, `acc`, or `PE_ID ^ imm` |
+| B | `RECV` | `b = mailbox`; C = 1 if a word was waiting |
+| C | `NEWS` | `acc` = neighbour's `acc` (sub 0 N, 1 E, 2 W, 3 S) |
+| D | `FPU` | bfloat16 ops, see below |
+| F | — | sequencer control, never sent to the PEs |
+
+**ALU** (`sub_op`): `0 ADD`, `1 ADC`, `2 SUB` (C = borrow), `3 AND`, `4 OR`,
+`5 XOR`, `6 SHL`, `7 SHR`, `8 MOV`, `9 ASR` (single-bit shifts), `A MUL`
+(low 16 bits), `B MULH` (high 16 bits, signed), `C SHLN`, `D SHRN`, `E ASRN`
+(shift by `operand & 15`), `F ROL`. Bit 2 of `flag_ctl` (`x=True` in the
+host library) selects a variant: `MULH` unsigned, `ROL` becomes `ROR`, and
+`SHLN`/`SHRN` become funnel shifts that pull bits in from `b`. A Q8.8
+fixed-point multiply is three instructions: `MUL`, `MULH`, then a funnel
+`SHRN` by 8.
+
+**FPU** (`sub_op`): `0 FADD`, `1 FSUB`, `2 FMUL`, `3 FCMP` (Z equal, N less,
+C unordered), `4 FI2F` (int16 to bf16), `5 FF2I` (bf16 to int16, truncating
+and saturating), `6 FNEG`, `7 FABS`. Subnormals are flushed to zero.
+
+**Context** (`CTX`, `sub_op` is the condition): always, never, Z, not Z, C,
+N, or `PE_ID == imm`. `flag_ctl` picks the action: set the flag, push it (for
+nested `if`s), pop, or invert (for `else`).
+
+**Sequencer control** (opcode F): `LOOP n` … `ENDL` (nested 4 deep, up to
+65535 iterations), `JMP`, `BANY` / `BNONE` (branch if any / no PE is active),
+`HALT`.
+
+## Programming it
+
+Programs are written in Python with the helpers in `dm16_host.py`:
+
+```python
+from dm16_host import *
+
+with open_dm16() as ser:                      # opens the UART at 2 Mbaud
+    upload_and_run(ser, [
+        ctx(CTX_ALWAYS),                      # every PE active
+        alu(ALU_MOV, SRC_ID),                 # acc = PE_ID
+        put(1),                               # r1 = PE_ID
+        LOOP(10),
+            alu(ALU_ADD, SRC_R, 1),           # acc += r1
+        ENDL,
+        stm(0x100),                           # mem[0x100] = 11 * PE_ID
+    ])
+    print(read_mem_grid(ser, 0x100))          # one value per PE
+```
+
+`upload_and_run` resolves labels, writes the program, starts it, and waits for
+the sequencer to finish. `inject_instr` runs a single instruction straight
+away. `read_acc_grid`, `read_mem_grid` and `write_words` move data in and out.
+
+### Host protocol
+
+The host library hides this, but the UART commands are:
+
+| Command | Bytes | Action |
+|---|---|---|
+| `01` | `a_hi a_lo i2 i1 i0` | write program word `a` |
+| `02` | `e_hi e_lo` | run from 0 until `pc == e` or `HALT` |
+| `03` | | single step |
+| `04` | | halt, `pc = 0` |
+| `05` | | read the context mask (8 bytes) |
+| `06` | `i2 i1 i0` | execute one instruction now |
+| `07` | | read every PE's `acc` (128 bytes) |
+| `08` | `d_hi d_lo` | set the UART clocks per bit (baud rate) |
+| `09` | | read status: bit 0 running, bit 1 any PE active |
+
+## Building and running
+
+**Requirements:** the Gowin EDA (V1.9.12.04 here, with a license),
+`openFPGALoader`, Python 3 with `pyserial`, and a Tang Console 138K.
+
+```sh
+./build.sh                                        # ~20 min -> impl/pnr/DM16.fs, timestamped build.log
+openFPGALoader -b tangconsole -m impl/pnr/DM16.fs # load into SRAM (flash untouched)
+python3 dm16_loader.py                            # memory, ALU, NEWS and network self-test
+```
+
+`build.sh` sets the environment the Gowin command-line tool needs on Linux and
+retries if the license server doesn't answer. The rules in `udev/` give the
+board's UART a stable name, `/dev/tang_console_uart`; set `DM16_PORT` to use
+another port and `DM16_BAUD` for another rate (up to 2 Mbaud, the bridge's
+reliable limit).
+
+### Tests and demos
+
+| Script | What it does |
+|---|---|
+| `dm16_loader.py` | memory, ALU, NEWS and hypercube network self-test |
+| `dm16_seq_test.py` | loops, nested loops, jumps, `HALT`, `BANY`/`BNONE` |
+| `dm16_fp_test.py` | bfloat16 ops checked bit-for-bit against `dm16_bf16_ref.py` |
+| `dm16_shift_test.py` | barrel shifts, rotates, funnel shifts, `MULH`, Q8.8 multiply |
+| `dm16_regfile_test.py` | registers, register operands, masked writes, bf16 dot product |
+| `dm16_prefix_sum.py` | parallel prefix sum across the hypercube |
+| `dm16_stress.py` | repeated runs to catch rare glitches |
+| `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus |
+| `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--check` to compare every pixel with a Python model |
+
+## Source files
+
+| File | Contents |
+|---|---|
+| `src/dm16_top.v` | board top: PLL, reset, UART pins, LEDs |
+| `src/dm16_core.v` | sequencer, clusters, NEWS wiring, routers, global OR |
+| `src/dm16_uart_seq.v` | UART, host commands, program memory, sequencer |
+| `src/dm16_cluster.v` | 4 PEs, their memories, network arbiter and mailboxes |
+| `src/dm16_pe.v` | the processing element |
+| `src/dm16_bf16.v` | pipelined bfloat16 add/sub/mul and int-to-float |
+| `src/hypercube_router.v` | e-cube packet router |
+| `src/dm16_pll.v`, `src/pll_init.v` | PLL and its start-up |
+| `src/dm16.cst`, `src/dm16.sdc` | pin and timing constraints |
+| `dm16_host.py` | host library: encoding, assembler, UART helpers |
+
+## Resource use
+
+On the GW5AST-138:
+
+| Resource | Used |
+|---|---|
+| Logic (LUTs + ALUs) | 99,362 / 138,240 (72%) |
+| Logic slices (CLS) | 59,457 / 69,120 (87%) |
+| Flip-flops | 31,517 / 139,095 (23%) |
+| Block RAM | 70 / 340 (21%): 64 PE memories + program memory |
+| DSP | 96 / 298 (33%) |
+| Fmax | 60.2 MHz, run at 50 MHz |

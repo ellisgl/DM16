@@ -1,3 +1,5 @@
+`timescale 1ns/1ns
+
 module dm16_uart_seq #(
     parameter integer CLK_HZ = 54_000_000,
     parameter integer BAUD   = 115_200,
@@ -353,10 +355,9 @@ module dm16_uart_seq #(
                 instr_valid <= 1'b1;
                 mem_wait    <= 1'b0;
                 fp_wait     <= is_fp_slow(current_instr);
-                if (!inj_active) begin
+                imem_wait   <= 1'b1;        // the PEs need an idle clock after every instruction
+                if (!inj_active)
                     pc <= pc + 1'b1;
-                    imem_wait <= 1'b1;
-                end
                 inj_active  <= 1'b0;
             end else if (imem_wait) begin
                 // Wait 1 clock for synchronous BSRAM fetched_instr[pc] to update
@@ -372,6 +373,7 @@ module dm16_uart_seq #(
                         inj_active <= 1'b1;
                     end else begin
                         instr_valid <= 1'b1;
+                        imem_wait   <= 1'b1;    // idle clock after every instruction
                         fp_wait     <= is_fp_slow(inj_instr);
                     end
                 end

@@ -1,3 +1,4 @@
+`timescale 1ns/1ns
 // DM16 processing element - 16-bit datapath with a built-in bfloat16 FPU.
 //
 // Registers: acc, b (16 bits; each holds an int16 or a bf16), mar (10 bits),
@@ -32,7 +33,8 @@
 //                      SHRN acc = ({b,acc} >> n)[15:0].
 //         MULH: C = 0, Z/N from the high half.
 // 8 SWP   sub 0: acc <-> r[n]   1 PUT: r[n] = acc   2 GET: acc = r[n]
-//         (flags unchanged; SWP with n = 0 is the original acc <-> b)
+//         (flags unchanged; src_sel must be 0; SWP with n = 0 is the
+//         original acc <-> b)
 // 9 CTX   context control (see cond_eval)
 // A SEND  send b; dest = src_sel 0: imm[5:0]  1: acc[5:0]  2: PE_ID ^ imm[5:0]
 // B RECV  b = mailbox, C = 1 if a packet was waiting (else C = 0)
@@ -44,6 +46,10 @@
 //         FADD/FSUB/FMUL/FI2F complete two clocks after they execute; the
 //         sequencer adds an idle cycle after them so the next instruction
 //         sees the result.
+//
+// Every instruction must be followed by at least one idle clock (the
+// sequencer guarantees it): MUL/MULH results and ALU Z/N flags are written
+// in that clock, and operands for the next instruction are read in it.
 module dm16_pe #(
     parameter [5:0] PE_ID  = 6'd0,
     parameter       HAS_RF = 1'b1      // r1..r7 (flip-flops)
@@ -51,9 +57,11 @@ module dm16_pe #(
     input  wire        clk,
     input  wire        rst_n,
 
-    // Broadcast SIMD instruction from the global sequencer
+    // Broadcast SIMD instruction from the global sequencer. instr_next is
+    // the instruction that will be on instr one clock later.
     input  wire [23:0] instr,
     input  wire        instr_valid,
+    input  wire [23:0] instr_next,
 
     // Local memory (1024 x 16)
     output reg  [9:0]  mem_addr,
@@ -81,7 +89,26 @@ module dm16_pe #(
     output wire [15:0] acc_out
 );
 
-    // Instruction fields
+    // ------------------------------------------------------------------
+    // Timing scheme
+    //
+    // The sequencer always leaves at least one idle clock after every
+    // instruction a PE executes, and the cluster shows each instruction on
+    // instr_next one clock before it reaches instr. The PE uses both:
+    //
+    //   clock before execute: decode instr_next into one-hot selects, and
+    //                         select operand B (r[n], immediate, PE_ID or
+    //                         the memory word) into the op_b register.
+    //   execute:              acc = flat AND-OR of the selected results.
+    //   idle clock after:     MUL/MULH write their (registered) product to
+    //                         acc, and ALU ops set Z/N from the new acc.
+    //
+    // Operand selection one clock early is safe because registers and b are
+    // only ever written when an instruction executes, which is at least one
+    // clock before the next instruction's early cycle ends.
+    // ------------------------------------------------------------------
+
+    // Instruction fields (executing instruction)
     wire [3:0]  opcode   = instr[23:20];
     wire [3:0]  sub_op   = instr[19:16];
     wire [1:0]  src_sel  = instr[15:14];
@@ -89,6 +116,12 @@ module dm16_pe #(
     wire [9:0]  imm10    = instr[9:0];
     wire [7:0]  imm8     = instr[7:0];
     wire [15:0] simm     = {{6{imm10[9]}}, imm10};
+
+    // Instruction fields (next instruction, for early decode)
+    wire [3:0]  n_opcode = instr_next[23:20];
+    wire [3:0]  n_sub    = instr_next[19:16];
+    wire [1:0]  n_src    = instr_next[15:14];
+    wire [9:0]  n_imm10  = instr_next[9:0];
 
     localparam OP_NOP  = 4'h0, OP_LDI  = 4'h1, OP_LDM  = 4'h2, OP_STM  = 4'h3,
                OP_LDX  = 4'h4, OP_STX  = 4'h5, OP_MAR  = 4'h6, OP_ALU  = 4'h7,
@@ -104,7 +137,8 @@ module dm16_pe #(
     reg [9:0]  mar;
     reg        flag_c, flag_z, flag_n;
     reg [3:0]  ctx_stack;
-    wire       ctx = ctx_stack[0];
+    wire       ctx  = ctx_stack[0];
+    wire       exec = instr_valid && ctx && (opcode != OP_CTX);
 
     assign ctx_active = ctx;
     assign news_out   = acc;
@@ -124,7 +158,7 @@ module dm16_pe #(
                      (((opcode == OP_ALU) || (opcode == OP_FPU)) && (src_sel == 2'b11));
     wire use_mar   = (opcode == OP_LDX) || (opcode == OP_STX) || (uses_mem && flag_ctl[0]);
     wire [9:0] addr_now = use_mar ? mar : imm10;
-    wire we_now    = instr_valid && ctx && ((opcode == OP_STM) || (opcode == OP_STX));
+    wire we_now    = exec && ((opcode == OP_STM) || (opcode == OP_STX));
 
     (* syn_preserve = 1 *) reg        wr_pend;
     (* syn_preserve = 1 *) reg [9:0]  wr_addr_q;
@@ -150,20 +184,21 @@ module dm16_pe #(
         mem_wdata = wr_data_q;
     end
 
-    // Registered memory read data. The sequencer waits two cycles on any
-    // read, so mem_q holds the word by the time the instruction executes,
-    // and the BSRAM clock-to-out delay stays off the ALU/FPU paths.
+    // Registered memory read data, for LDM/LDX. The sequencer waits two
+    // cycles on any read: the BSRAM output is valid in the clock before
+    // execute, so mem_q (and op_b, below) capture it then.
     reg [15:0] mem_q;
     always @(posedge clk) mem_q <= mem_rdata;
 
     // ------------------------------------------------------------------
     // Register file: r0 is b_reg; r1..r7 are flip-flops (this device has
-    // no distributed RAM; entry 0 of rf is never used).
+    // no distributed RAM; entry 0 of rf is never used). Read early, for
+    // the next instruction; written when SWP/PUT executes.
     // ------------------------------------------------------------------
-    wire [2:0]  r_idx = imm10[2:0];
-    wire [15:0] r_val;
-    wire        r_put = instr_valid && ctx && (opcode == OP_SWP) &&
-                        (sub_op != 4'd2);       // SWP or PUT
+    wire [2:0]  r_idx   = imm10[2:0];
+    wire [2:0]  n_r_idx = n_imm10[2:0];
+    wire [15:0] n_r_val;
+    wire        r_put = exec && (opcode == OP_SWP) && (sub_op != 4'd2);   // SWP or PUT
 
     generate
         if (HAS_RF) begin : g_rf
@@ -171,83 +206,110 @@ module dm16_pe #(
             always @(posedge clk)
                 if (r_put && (r_idx != 3'd0))
                     rf[r_idx] <= acc;
-            assign r_val = (r_idx == 3'd0) ? b_reg : rf[r_idx];
+            assign n_r_val = (n_r_idx == 3'd0) ? b_reg : rf[n_r_idx];
         end else begin : g_no_rf   // every r[n] is b
-            assign r_val = b_reg;
+            assign n_r_val = b_reg;
         end
     endgenerate
 
     // ------------------------------------------------------------------
-    // Operand B
+    // Operand B, selected one clock early (SWP/GET use src_sel 0 = r[n])
     // ------------------------------------------------------------------
     reg [15:0] op_b;
-    always @(*) begin
-        case (src_sel)
-            2'b00: op_b = r_val;
-            2'b01: op_b = simm;
-            2'b10: op_b = {10'd0, PE_ID};
-            2'b11: op_b = mem_q;
+    always @(posedge clk) begin
+        case (n_src)
+            2'b00: op_b <= n_r_val;
+            2'b01: op_b <= {{6{n_imm10[9]}}, n_imm10};
+            2'b10: op_b <= {10'd0, PE_ID};
+            2'b11: op_b <= mem_rdata;
         endcase
+    end
+
+    // ------------------------------------------------------------------
+    // Early decode: one-hot selects for the instruction about to execute
+    // ------------------------------------------------------------------
+    wire n_alu = (n_opcode == OP_ALU);
+    wire n_fpu = (n_opcode == OP_FPU);
+
+    reg d_add, d_and, d_or, d_xor, d_mov, d_shl1, d_shr1, d_asr1, d_bsh, d_mul;
+    reg d_sub, d_adc, d_mulh, d_x;
+    reg d_shln, d_shrn, d_asrn, d_rot;
+    reg d_ldi, d_ldi_hi, d_ldi_lo, d_ldm, d_get;
+    reg d_news_n, d_news_e, d_news_w, d_news_s;
+    reg d_f2i, d_fneg, d_fabs;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            {d_add, d_and, d_or, d_xor, d_mov, d_shl1, d_shr1, d_asr1, d_bsh, d_mul} <= 10'd0;
+            {d_sub, d_adc, d_mulh, d_x, d_shln, d_shrn, d_asrn, d_rot} <= 8'd0;
+            {d_ldi, d_ldi_hi, d_ldi_lo, d_ldm, d_get} <= 5'd0;
+            {d_news_n, d_news_e, d_news_w, d_news_s, d_f2i, d_fneg, d_fabs} <= 7'd0;
+        end else begin
+            d_add    <= n_alu && (n_sub <= 4'h2);                  // ADD ADC SUB
+            d_sub    <= (n_sub == 4'h2);
+            d_adc    <= (n_sub == 4'h1);
+            d_and    <= n_alu && (n_sub == 4'h3);
+            d_or     <= n_alu && (n_sub == 4'h4);
+            d_xor    <= n_alu && (n_sub == 4'h5);
+            d_shl1   <= n_alu && (n_sub == 4'h6);
+            d_shr1   <= n_alu && (n_sub == 4'h7);
+            d_mov    <= n_alu && (n_sub == 4'h8);
+            d_asr1   <= n_alu && (n_sub == 4'h9);
+            d_mul    <= n_alu && ((n_sub == 4'hA) || (n_sub == 4'hB));
+            d_mulh   <= (n_sub == 4'hB);
+            d_bsh    <= n_alu && (n_sub >= 4'hC);
+            d_shln   <= (n_sub == 4'hC);
+            d_shrn   <= (n_sub == 4'hD);
+            d_asrn   <= (n_sub == 4'hE);
+            d_rot    <= (n_sub == 4'hF);
+            d_x      <= instr_next[12];                            // flag_ctl[2]
+            d_ldi    <= (n_opcode == OP_LDI) && (n_sub[1:0] != 2'd1) && (n_sub[1:0] != 2'd2);
+            d_ldi_hi <= (n_opcode == OP_LDI) && (n_sub[1:0] == 2'd1);
+            d_ldi_lo <= (n_opcode == OP_LDI) && (n_sub[1:0] == 2'd2);
+            d_ldm    <= (n_opcode == OP_LDM) || (n_opcode == OP_LDX);
+            d_get    <= (n_opcode == OP_SWP) && (n_sub != 4'd1);   // SWP, GET
+            d_news_n <= (n_opcode == OP_NEWS) && (n_sub[1:0] == 2'd0);
+            d_news_e <= (n_opcode == OP_NEWS) && (n_sub[1:0] == 2'd1);
+            d_news_w <= (n_opcode == OP_NEWS) && (n_sub[1:0] == 2'd2);
+            d_news_s <= (n_opcode == OP_NEWS) && (n_sub[1:0] == 2'd3);
+            d_f2i    <= n_fpu && (n_sub == F_F2I);
+            d_fneg   <= n_fpu && (n_sub == F_NEG);
+            d_fabs   <= n_fpu && (n_sub == F_ABS);
+        end
     end
 
     // ------------------------------------------------------------------
     // Integer ALU
     // ------------------------------------------------------------------
-    wire        alu_x    = flag_ctl[2];
+    // ADD / ADC / SUB share one adder; for SUB, C is the borrow.
+    wire [16:0] sum   = {1'b0, acc} + {1'b0, op_b ^ {16{d_sub}}} +
+                        {16'd0, d_sub | (d_adc & flag_c)};
+    wire        add_c = sum[16] ^ d_sub;
 
     // 17 x 17 signed multiply covers both signed and unsigned 16-bit
     // operands (fits one 18 x 18 DSP); the low half is the same either way.
-    wire signed [16:0] mul_a    = {~alu_x & acc[15],  acc};
-    wire signed [16:0] mul_b    = {~alu_x & op_b[15], op_b};
+    // The product is registered and written to acc in the idle clock.
+    wire signed [16:0] mul_a    = {~d_x & acc[15],  acc};
+    wire signed [16:0] mul_b    = {~d_x & op_b[15], op_b};
     wire signed [33:0] mul_full = mul_a * mul_b;
+    reg         [31:0] mul_q;
+    always @(posedge clk) mul_q <= mul_full[31:0];
 
     // Barrel shifter: one 33-bit right shift by k = 0..16 of {hi, lo, 0}
     // serves every shift and rotate.
     //   right by n:  hi = fill, lo = acc,  k = n       result = sh[16:1], C = sh[0]
     //   left by n:   hi = acc,  lo = fill, k = 16 - n  result = sh[16:1], C = sh[17]
     wire [3:0]  sh_n    = op_b[3:0];
-    wire        sh_left = (sub_op == 4'hC) || ((sub_op == 4'hF) && !alu_x);
-    reg  [15:0] sh_hi, sh_lo;
-    always @(*) begin
-        case (sub_op)
-            4'hC:    begin sh_hi = acc;                        sh_lo = alu_x ? b_reg : 16'd0; end // SHLN
-            4'hD:    begin sh_hi = alu_x ? b_reg : 16'd0;      sh_lo = acc;                   end // SHRN
-            4'hE:    begin sh_hi = {16{acc[15]}};              sh_lo = acc;                   end // ASRN
-            default: begin sh_hi = acc;                        sh_lo = acc;                   end // ROL/ROR
-        endcase
-    end
-    wire [4:0]  sh_k   = sh_left ? (5'd16 - {1'b0, sh_n}) : {1'b0, sh_n};
-    wire [32:0] sh_out = {sh_hi, sh_lo, 1'b0} >> sh_k;
-    wire [15:0] sh_res = sh_out[16:1];
-    reg         sh_c;
-    always @(*) begin
-        if (sh_n == 4'd0)       sh_c = 1'b0;
-        else if (sub_op == 4'hF) sh_c = alu_x ? sh_res[15] : sh_res[0];
-        else if (sh_left)        sh_c = sh_out[17];
-        else                     sh_c = sh_out[0];
-    end
-
-    reg  [16:0] alu_res;
-    always @(*) begin
-        alu_res = {1'b0, acc};
-        case (sub_op)
-            4'h0: alu_res = {1'b0, acc} + {1'b0, op_b};                    // ADD
-            4'h1: alu_res = {1'b0, acc} + {1'b0, op_b} + {16'd0, flag_c};  // ADC
-            4'h2: alu_res = {1'b0, acc} - {1'b0, op_b};                    // SUB (C = borrow)
-            4'h3: alu_res = {1'b0, acc & op_b};                            // AND
-            4'h4: alu_res = {1'b0, acc | op_b};                            // OR
-            4'h5: alu_res = {1'b0, acc ^ op_b};                            // XOR
-            4'h6: alu_res = {acc[15], acc[14:0], 1'b0};                    // SHL
-            4'h7: alu_res = {acc[0], 1'b0, acc[15:1]};                     // SHR
-            4'h8: alu_res = {1'b0, op_b};                                  // MOV
-            4'h9: alu_res = {acc[0], acc[15], acc[15:1]};                  // ASR
-            4'hA: alu_res = {1'b0, mul_full[15:0]};                        // MUL
-            4'hB: alu_res = {1'b0, mul_full[31:16]};                       // MULH
-            4'hC, 4'hD, 4'hE, 4'hF:
-                  alu_res = {sh_c, sh_res};                                // SHLN/SHRN/ASRN/ROL
-            default: alu_res = {1'b0, acc};
-        endcase
-    end
+    wire        sh_left = d_shln || (d_rot && !d_x);
+    wire [15:0] sh_hi   = d_shrn ? (d_x ? b_reg : 16'd0) :
+                          d_asrn ? {16{acc[15]}} : acc;
+    wire [15:0] sh_lo   = d_shln ? (d_x ? b_reg : 16'd0) : acc;
+    wire [4:0]  sh_k    = sh_left ? (5'd16 - {1'b0, sh_n}) : {1'b0, sh_n};
+    wire [32:0] sh_out  = {sh_hi, sh_lo, 1'b0} >> sh_k;
+    wire [15:0] sh_res  = sh_out[16:1];
+    wire        sh_c    = (sh_n == 4'd0) ? 1'b0 :
+                          d_rot          ? (d_x ? sh_res[15] : sh_res[0]) :
+                          sh_left        ? sh_out[17] : sh_out[0];
 
     // ------------------------------------------------------------------
     // Context condition
@@ -271,7 +333,7 @@ module dm16_pe #(
     // ------------------------------------------------------------------
     wire fp_arith = (opcode == OP_FPU) &&
                     ((sub_op == F_ADD) || (sub_op == F_SUB) || (sub_op == F_MUL) || (sub_op == F_I2F));
-    wire fp_start = instr_valid && ctx && fp_arith;
+    wire fp_start = exec && fp_arith;
     wire [1:0] fp_op = (sub_op == F_ADD) ? 2'd0 :
                        (sub_op == F_SUB) ? 2'd1 :
                        (sub_op == F_MUL) ? 2'd2 : 2'd3;
@@ -316,6 +378,44 @@ module dm16_pe #(
                            (src_sel == 2'b10) ? (PE_ID ^ imm10[5:0]) : imm10[5:0];
 
     // ------------------------------------------------------------------
+    // acc input: a flat AND-OR of every source, with one-hot selects
+    // ------------------------------------------------------------------
+    reg         mul_wb, mulh_wb, zn_pend;
+    wire [15:0] mul_res = mulh_wb ? mul_q[31:16] : mul_q[15:0];
+
+    wire [15:0] acc_exec =
+          ({16{d_add}}    & sum[15:0])
+        | ({16{d_and}}    & (acc & op_b))
+        | ({16{d_or}}     & (acc | op_b))
+        | ({16{d_xor}}    & (acc ^ op_b))
+        | ({16{d_mov}}    & op_b)
+        | ({16{d_shl1}}   & {acc[14:0], 1'b0})
+        | ({16{d_shr1}}   & {1'b0, acc[15:1]})
+        | ({16{d_asr1}}   & {acc[15], acc[15:1]})
+        | ({16{d_bsh}}    & sh_res)
+        | ({16{d_ldi}}    & simm)
+        | ({16{d_ldi_hi}} & {imm8, acc[7:0]})
+        | ({16{d_ldi_lo}} & {acc[15:8], imm8})
+        | ({16{d_ldm}}    & mem_q)
+        | ({16{d_get}}    & op_b)
+        | ({16{d_news_n}} & news_n_in)
+        | ({16{d_news_e}} & news_e_in)
+        | ({16{d_news_w}} & news_w_in)
+        | ({16{d_news_s}} & news_s_in)
+        | ({16{d_f2i}}    & f2i)
+        | ({16{d_fneg}}   & (acc ^ 16'h8000))
+        | ({16{d_fabs}}   & (acc & 16'h7FFF));
+
+    wire acc_exec_we = d_add | d_and | d_or | d_xor | d_mov | d_shl1 | d_shr1 | d_asr1 |
+                       d_bsh | d_ldi | d_ldi_hi | d_ldi_lo | d_ldm | d_get |
+                       d_news_n | d_news_e | d_news_w | d_news_s | d_f2i | d_fneg | d_fabs;
+
+    // Carry from the ALU ops that set it (logic ops and MOV clear it)
+    wire alu_c = (d_add & add_c) | (d_bsh & sh_c) | (d_shl1 & acc[15]) |
+                 ((d_shr1 | d_asr1) & acc[0]);
+    wire is_alu_flags = d_add | d_and | d_or | d_xor | d_mov | d_shl1 | d_shr1 | d_asr1 | d_bsh;
+
+    // ------------------------------------------------------------------
     // State update
     // ------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
@@ -328,6 +428,9 @@ module dm16_pe #(
             flag_n       <= 1'b0;
             fp_wb1       <= 1'b0;
             fp_wb2       <= 1'b0;
+            mul_wb       <= 1'b0;
+            mulh_wb      <= 1'b0;
+            zn_pend      <= 1'b0;
             ctx_stack    <= 4'b1111;
             net_tx_pkt   <= 24'd0;
             net_tx_valid <= 1'b0;
@@ -339,85 +442,78 @@ module dm16_pe #(
             net_rx_pop <= 1'b0;
 
             // FPU write-back, two clocks after the arithmetic op executed
+            // (the sequencer adds a second idle clock after these)
             fp_wb1 <= fp_start;
             fp_wb2 <= fp_wb1;
             if (fp_wb2)
                 acc <= fp_result;
 
-            if (instr_valid) begin
-                if (opcode == OP_CTX) begin
-                    case (flag_ctl[1:0])
-                        2'b00: ctx_stack[0] <= cond_eval;                     // SET
-                        2'b01: ctx_stack    <= {ctx_stack[2:0], cond_eval};   // PUSH
-                        2'b10: ctx_stack    <= {1'b1, ctx_stack[3:1]};        // POP
-                        2'b11: ctx_stack    <= ~ctx_stack;                    // INVERT
-                    endcase
-                end else if (ctx) begin
-                    if (uses_mem && flag_ctl[1])
-                        mar <= mar + 10'd1;
+            // MUL/MULH write-back and ALU Z/N, in the idle clock
+            mul_wb  <= exec && d_mul;
+            mulh_wb <= d_mulh;
+            zn_pend <= exec && is_alu_flags;
+            if (mul_wb) begin
+                acc    <= mul_res;
+                flag_z <= (mul_res == 16'd0);
+                flag_n <= mul_res[15];
+            end
+            if (zn_pend) begin
+                flag_z <= (acc == 16'd0);
+                flag_n <= acc[15];
+            end
 
-                    case (opcode)
-                        OP_LDI: case (sub_op[1:0])
-                                    2'd1:    acc[15:8] <= imm8;
-                                    2'd2:    acc[7:0]  <= imm8;
-                                    default: acc       <= simm;
-                                endcase
+            if (exec) begin
+                if (acc_exec_we)
+                    acc <= acc_exec;
+                if (is_alu_flags)
+                    flag_c <= alu_c;
+                if (d_mul)
+                    flag_c <= 1'b0;
+                if (uses_mem && flag_ctl[1])
+                    mar <= mar + 10'd1;
+            end
 
-                        OP_LDM, OP_LDX: acc <= mem_q;
+            if (instr_valid && (opcode == OP_CTX)) begin
+                case (flag_ctl[1:0])
+                    2'b00: ctx_stack[0] <= cond_eval;                     // SET
+                    2'b01: ctx_stack    <= {ctx_stack[2:0], cond_eval};   // PUSH
+                    2'b10: ctx_stack    <= {1'b1, ctx_stack[3:1]};        // POP
+                    2'b11: ctx_stack    <= ~ctx_stack;                    // INVERT
+                endcase
+            end
 
-                        OP_MAR: mar <= (src_sel == 2'b00) ? acc[9:0] : imm10;
+            if (exec) begin
+                case (opcode)
+                    OP_MAR: mar <= (src_sel == 2'b00) ? acc[9:0] : imm10;
 
-                        OP_ALU: begin
-                            acc    <= alu_res[15:0];
-                            flag_c <= alu_res[16];
-                            flag_z <= (alu_res[15:0] == 16'd0);
-                            flag_n <= alu_res[15];
+                    OP_SWP:             // r1..r7 are written by g_rf
+                        if ((sub_op != 4'd2) && (r_idx == 3'd0 || !HAS_RF))
+                            b_reg <= acc;                           // SWP, PUT
+
+                    OP_SEND: begin
+                        net_tx_pkt   <= {1'b1, 1'b0, send_dest, b_reg};
+                        net_tx_valid <= 1'b1;
+                    end
+
+                    OP_RECV: begin
+                        if (net_rx_valid) begin
+                            b_reg      <= net_rx_data;
+                            net_rx_pop <= 1'b1;
+                            flag_c     <= 1'b1;
+                        end else begin
+                            flag_c     <= 1'b0;
+                        end
+                    end
+
+                    OP_FPU:
+                        if (sub_op == F_CMP) begin
+                            flag_c <= x_nan | y_nan;
+                            flag_z <= !(x_nan | y_nan) && (x_key == y_key);
+                            flag_n <= !(x_nan | y_nan) && (x_key <  y_key);
                         end
 
-                        OP_SWP: begin       // r1..r7 are written by g_rf
-                            if (sub_op != 4'd1)
-                                acc <= r_val;                           // SWP, GET
-                            if ((sub_op != 4'd2) && (r_idx == 3'd0 || !HAS_RF))
-                                b_reg <= acc;                           // SWP, PUT
-                        end
-
-                        OP_SEND: begin
-                            net_tx_pkt   <= {1'b1, 1'b0, send_dest, b_reg};
-                            net_tx_valid <= 1'b1;
-                        end
-
-                        OP_RECV: begin
-                            if (net_rx_valid) begin
-                                b_reg      <= net_rx_data;
-                                net_rx_pop <= 1'b1;
-                                flag_c     <= 1'b1;
-                            end else begin
-                                flag_c     <= 1'b0;
-                            end
-                        end
-
-                        OP_NEWS: case (sub_op[1:0])
-                                     2'b00: acc <= news_n_in;
-                                     2'b01: acc <= news_e_in;
-                                     2'b10: acc <= news_w_in;
-                                     2'b11: acc <= news_s_in;
-                                 endcase
-
-                        OP_FPU: case (sub_op)
-                                    F_CMP: begin
-                                        flag_c <= x_nan | y_nan;
-                                        flag_z <= !(x_nan | y_nan) && (x_key == y_key);
-                                        flag_n <= !(x_nan | y_nan) && (x_key <  y_key);
-                                    end
-                                    F_F2I: acc <= f2i;
-                                    F_NEG: acc <= acc ^ 16'h8000;
-                                    F_ABS: acc <= acc & 16'h7FFF;
-                                    default: ;   // ADD/SUB/MUL/I2F via fp_wb
-                                endcase
-
-                        default: ;
-                    endcase
-                end
+                    default: ;
+                endcase
             end
         end
     end

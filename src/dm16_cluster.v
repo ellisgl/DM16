@@ -1,3 +1,4 @@
+`timescale 1ns/1ns
 // One cluster: LANES PEs, each with its own single-port BSRAM (1024 x 16),
 // a LANES-to-1 network injection arbiter and a 1-deep receive mailbox per PE.
 //
@@ -118,6 +119,7 @@ module dm16_cluster #(
                 .rst_n        (rst_n),
                 .instr        (instr_pe),
                 .instr_valid  (instr_valid_pe),
+                .instr_next   (instr_q),          // what instr_pe holds next clock
                 .mem_addr     (mem_addr[i*10 +: 10]),
                 .mem_wdata    (mem_wdata[i*16 +: 16]),
                 .mem_we       (mem_we[i]),

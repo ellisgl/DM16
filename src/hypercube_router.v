@@ -1,3 +1,4 @@
+`timescale 1ns/1ns
 // Hypercube router: one per cluster, DIMS-dimensional binary hypercube.
 //
 // Packet (PKT_W bits). The destination cluster sits at bit NODE_LSB:
