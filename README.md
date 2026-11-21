@@ -556,7 +556,15 @@ On the GW5AST-138:
 * The chat model (`dm16_chat.py`, `dm16_chat_train.py`, `models/`) builds on
   [Z80-μLM](https://github.com/HarryR/z80ai) by HarryR: its input encoding,
   character-by-character design and tinychat training data come from that
-  project.
+  project, used under the MIT license (Z80-μLM's README offers "MIT or
+  Apache-2.0 as you see fit"). `models/tinychat_int4.npz` was trained on
+  that data.
+
+## License
+
+DM16 is released under the BSD 3-Clause License; see [LICENSE](LICENSE). The
+parts derived from Z80-μLM, listed under Credits, remain under its MIT
+license.
 
 ## Known issues
 
