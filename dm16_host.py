@@ -280,15 +280,19 @@ def FBY(y):
     return _seq(SEQ_FBY, y)
 
 
-def FBW(stride=0):
-    """Write every PE's ACC[7:0] (RGB332) to the frame buffer, all PEs whether
-    active or not. stride 0 (tile): PE p goes to (x + p % COLS, y + p // COLS),
-    then x += COLS, wrapping to x = 0, y += ROWS at the right edge. stride s
-    (row, 1..15): PE p goes to (x + p * s, y), then x += 1, wrapping to x = 0,
-    y += 1 after s writes. Pixels outside 320x240 are dropped."""
+def FBW(stride=0, zoom=1):
+    """Write every PE's ACC[7:0] to the frame buffer, all PEs whether active
+    or not. stride 0 (tile): PE p goes to (x + p % COLS, y + p // COLS), as a
+    zoom x zoom block (zoom 1, 2, 4 or 8) at (x + (p % COLS) * zoom,
+    y + (p // COLS) * zoom); then x += COLS * zoom, wrapping to x = 0,
+    y += ROWS * zoom at the right edge. stride s (row, 1..15): PE p goes to
+    (x + p * s, y), then x += 1, wrapping to x = 0, y += 1 after s writes.
+    Pixels outside the frame buffer are dropped."""
     if not 0 <= stride <= 15:
         raise ValueError("FBW: stride must be 0..15")
-    return _seq(SEQ_FBW, stride)
+    if zoom not in (1, 2, 4, 8) or (zoom != 1 and stride):
+        raise ValueError("FBW: zoom must be 1, 2, 4 or 8, and only in tile mode (stride 0)")
+    return _seq(SEQ_FBW, stride | ((zoom.bit_length() - 1) << 4))
 
 
 def rgb332(r, g, b):

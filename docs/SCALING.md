@@ -56,7 +56,7 @@ Shared logic is small by comparison:
 On the Tang Console itself (Gowin GW5AST-138, measured by the Gowin tools),
 the whole 64 × 16-bit machine uses 72% of the logic, 87% of the logic slices,
 23% of the flip-flops, 21% of the block RAM and 33% of the DSPs, with Fmax
-58.3 MHz; the slowest path is inside the hypercube router, not the PEs. (A
+58–63 MHz depending on the build; the slowest path is inside the hypercube router, not the PEs. (A
 one-packet buffer between each cluster's PEs and its router removed the
 previous slowest path, the injection handshake.) The Tang Nano 20K (8 PEs
 with FPUs) uses 58% of its GW2AR-18 at 54.2 MHz, and the Nano 9K (8
