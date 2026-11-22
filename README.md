@@ -551,6 +551,46 @@ On the GW5AST-138:
 | DSP | 96 / 298 (33%) |
 | Fmax | 58.3 MHz, run at 50 MHz (the slowest path is inside the hypercube router) |
 
+## Ideas for contributors
+
+Some directions that would make good projects, with where to start:
+
+* **Give the chatbot a calculator.** Ask the chat model "what is 5 plus 4"
+  and it says "NO": it only recalls replies it was trained on. Train it to
+  answer maths questions with a special "calculate" character, and let the
+  PEs read the numbers from the query and work out the answer, a tiny version
+  of how large language models use tools. See `dm16_chat.py`.
+* **Better training data for the chat model.** It knows about 2,300 short
+  exchanges. Generated data (arithmetic in many phrasings, questions about
+  DM16 itself, more small talk) would widen it. If you use public dialogue
+  sets, check their licenses: several are non-commercial or share-alike. See
+  `dm16_chat_train.py`.
+* **Bigger models.** Each PE's memory is nearly full. The register and memory
+  parameters (`NREGS`, `MEM_AW`) allow 4 K words per PE on the Tang Console,
+  room for a much larger network. See `docs/SCALING.md`.
+* **New boards.** The design is parameterized. An ECP5 board such as the
+  Icepi Zero would use the fully open-source toolchain (Yosys, nextpnr,
+  openFPGALoader); a trial synthesis fitted 16 integer PEs in 54% of an
+  ECP5-25F at about 70 MHz. One change is needed first: the sequencer's
+  program memory is written inside a block with a reset, so tools other than
+  Gowin's build it from flip-flops instead of block RAM.
+* **Several boards as one machine.** Boards could form a hypercube of boards,
+  which is also a torus for the NEWS grid. `docs/SCALING.md` covers links,
+  keeping boards in step and the global OR.
+* **A faster host link.** The USB bridges carry about 80 KB/s back to the PC
+  with ~6 ms per request, the main bottleneck for many programs. PCIe or
+  Ethernet would change that.
+* **More speed.** The slowest path is now inside the hypercube router (Fmax
+  58.3 MHz on the Console, run at 50 MHz).
+* **The open Known issue below:** two rare wrong Mandelbrot results on the
+  Console that haven't recurred.
+* **More demos:** image filters on the NEWS grid, bitonic sort or an FFT over
+  the hypercube, textures for the ray caster, or video straight from the PEs
+  through the Console's HDMI port.
+* **A language.** Programs are written as Python lists of instructions. The
+  Connection Machine had parallel languages, C* and \*Lisp; something in that
+  spirit for DM16 would make it far easier to program.
+
 ## Credits
 
 * The chat model (`dm16_chat.py`, `dm16_chat_train.py`, `models/`) builds on
