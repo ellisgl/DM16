@@ -487,7 +487,22 @@ USB bridge's ~6 ms per request dominates.)
 
 It starts from a random field made on the board, shows 15 generations a
 second (`--fps 0` for flat out), and `--check` / `--capture` compare the
-universe and the screen with a NumPy Life. The universe wraps round like a
+universe and the screen with a NumPy Life.
+
+**Other rules.** `--rule` runs any Life-like rule, written B/S (the
+neighbour counts at which a dead cell is born / a live one survives:
+Conway's is `B3/S23`), or any "Generations" rule B/S/C, where a live cell
+that doesn't survive fades through C − 2 dying states first (drawn fading
+from orange to purple). The rule is a lookup table in PE memory, so every
+rule runs at the same speed. `--list-rules` shows the named ones: `highlife`
+(B36/S23), `daynight`, `seeds`, `maze`, `lwod` (Life without Death),
+`diamoeba`, `morley`, `anneal`, `replicator`, `2x2`, and the Generations
+rules `brain` (Brian's Brain, B2/S/C3), `starwars` and `frogs`.
+
+```sh
+python3 dm16_life.py --hdmi --rule brain
+python3 dm16_life.py --hdmi --rule B36/S23 --seed 7
+``` The universe wraps round like a
 torus with a one-row twist (off the right edge is back on the left, one row
 down), which falls out of numbering the tiles row by row.
 
@@ -619,7 +634,7 @@ stable name, `/dev/tang_console_uart`. `DM16_BAUD` picks another rate (up to
 | `dm16_regfile_test.py` | registers, register operands, masked writes, bf16 dot product |
 | `dm16_prefix_sum.py` | parallel prefix sum across the hypercube |
 | `dm16_stress.py` | repeated runs to catch rare glitches |
-| `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus, every generation checked against Python; `--hdmi` for a 160 × 120 universe on HDMI (80 × 60 on the Nanos), `--check` / `--capture` to compare it with a NumPy Life |
+| `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus, every generation checked against Python; `--hdmi` for a 160 × 120 universe on HDMI (80 × 60 on the Nanos), `--rule` for other Life-like and Generations rules (`--list-rules`), `--check` / `--capture` to compare it with a NumPy model |
 | `dm16_raycast.py` | Wolfenstein-style ray caster, one ray per PE: W/S or arrows to move, A/D to turn; `--demo` for an autopilot tour, `--ascii` for text shading, `--check` to compare every column with a Python model |
 | `dm16_chat.py` | a 4-bit chat model that generates whole replies on the Tang Console (builds on [Z80-μLM](https://github.com/HarryR/z80ai)); `--check` compares every output value with the integer model, `--test-file` compares whole replies |
 | `dm16_chat_train.py` | trains that model with NumPy (quantization-aware); `--holdout` measures replies to unseen queries |
