@@ -266,33 +266,39 @@ def model_image(view, w, h, max_iter):
 _STOPS = [(0, 0, 96), (0, 160, 255), (255, 255, 255), (255, 160, 0), (128, 0, 0), (0, 0, 96)]
 
 
-def palette():
+def palette(ncol=256):
+    """Pixel values for escape counts 0..63: RGB332, or with 16 colours the
+    nearest of the CGA colours other than black."""
+    from dm16_hdmi import CGA
     out = []
     for k in range(64):
         f = k / 64 * (len(_STOPS) - 1)
         j, t = int(f), f - int(f)
         c = [round(a + (b - a) * t) for a, b in zip(_STOPS[j], _STOPS[j + 1])]
-        out.append(rgb332(*c) or 1)        # 0 is reserved for the set itself
+        if ncol == 16:
+            out.append(1 + int(((CGA[1:] - c) ** 2).sum(1).argmin()))
+        else:
+            out.append(rgb332(*c) or 1)    # 0 is reserved for the set itself
     return out
 
 
-def palette_program():
+def palette_program(ncol=256):
     prog = [ctx(CTX_ALWAYS)]
-    for k, c in enumerate(palette()):
+    for k, c in enumerate(palette(ncol)):
         prog += [*ldi16(c), stm(PAL + k)]
     return prog
 
 
-def expected_screen(view, max_iter):
-    """The RGB332 frame buffer an --hdmi run should leave."""
+def expected_screen(view, max_iter, ncol=256):
+    """The frame buffer an --hdmi run should leave."""
     counts = model_image(view, FB_W, FB_H, max_iter)
-    pal = np.array(palette())
+    pal = np.array(palette(ncol))
     return np.where(counts >= max_iter, 0, pal[counts & 63])
 
 
-def compute_hdmi(ser, view, max_iter, with_palette=True):
+def compute_hdmi(ser, view, max_iter, with_palette=True, ncol=256):
     bw, bh = FB_W // BLOCK, FB_H // ROWS_PER_BLOCK
-    prog = (palette_program() if with_palette else []) + setup_program(view) + \
+    prog = (palette_program(ncol) if with_palette else []) + setup_program(view) + \
         build_program(bw, bh, max_iter, hdmi=True)
     t0 = time.monotonic()
     upload_and_run(ser, prog, timeout=120)
@@ -424,8 +430,8 @@ def main_hdmi(args):
     bad = frames = 0
     t_start = time.monotonic()
     with open_dm16(args.port) as ser:
-        cfg = dm16_hdmi.read_config(ser)
-        if not cfg or not cfg.get("has_hdmi"):
+        ncol = dm16_hdmi.screen_colors(dm16_hdmi.read_config(ser))
+        if not ncol:
             raise SystemExit("this bitstream has no HDMI output")
         first = True
         try:
@@ -434,14 +440,15 @@ def main_hdmi(args):
                     depth = math.log2(args.width / width)
                     max_iter = min(511, round(args.max_iter * (1 + depth / 3)))
                     view = make_view(cx, cy, width, FB_W, FB_H, 1.0)
-                    elapsed, n = compute_hdmi(ser, view, max_iter, with_palette=first)
+                    elapsed, n = compute_hdmi(ser, view, max_iter, with_palette=first, ncol=ncol)
                     first = False
                     frames += 1
                     print(f"zoom {args.width / width:5.1f}x  {max_iter} iterations max  "
                           f"{n} instructions  {elapsed * 1000:5.0f} ms  "
                           f"({frames / (time.monotonic() - t_start):.1f} fps)", flush=True)
                     if device and not dm16_hdmi.check_screen(
-                            device, expected_screen(view, max_iter), args.png):
+                            device, expected_screen(view, max_iter, ncol), args.png,
+                            ncol=ncol):
                         bad += 1
                 if not args.loop:
                     break

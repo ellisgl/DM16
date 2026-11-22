@@ -1,8 +1,9 @@
 """
 DM16 HDMI output: test pattern, and checking the screen with a capture card.
 
-HDMI builds (Tang Console 138K) have a 320x240 RGB332 frame buffer, shown at
-640x480 60 Hz. Programs write it with FBX / FBY / FBW (see dm16_host.py):
+HDMI builds have a 320x240 frame buffer, shown at 640x480 60 Hz: 256 colours
+(RGB332) on the Tang Console 138K, 16 (the CGA palette, the low 4 bits of
+each byte) on the Tang Nano 20K. The configuration readback says which. Programs write it with FBX / FBY / FBW (see dm16_host.py):
 FBW copies the low byte of every PE's ACC to the frame buffer at once.
 
   python3 dm16_hdmi.py                      # draw the test pattern
@@ -85,22 +86,36 @@ def rgb332_to_rgb(fb):
     return np.stack([LEVELS3[fb >> 5], LEVELS3[(fb >> 2) & 7], LEVELS2[fb & 3]], -1).astype(np.uint8)
 
 
-def rgb_to_rgb332(rgb):
-    """Nearest RGB332 colour of each pixel."""
-    rgb = rgb.astype(np.int64)
-    r = np.abs(rgb[..., 0, None] - LEVELS3).argmin(-1)
-    g = np.abs(rgb[..., 1, None] - LEVELS3).argmin(-1)
-    b = np.abs(rgb[..., 2, None] - LEVELS2).argmin(-1)
-    return (r << 5) | (g << 2) | b
+# The 16-colour palette (Nano 20K), as in dm16_hdmi.v
+CGA = np.array([(0x00, 0x00, 0x00), (0x00, 0x00, 0xAA), (0x00, 0xAA, 0x00), (0x00, 0xAA, 0xAA),
+                (0xAA, 0x00, 0x00), (0xAA, 0x00, 0xAA), (0xAA, 0x55, 0x00), (0xAA, 0xAA, 0xAA),
+                (0x55, 0x55, 0x55), (0x55, 0x55, 0xFF), (0x55, 0xFF, 0x55), (0x55, 0xFF, 0xFF),
+                (0xFF, 0x55, 0x55), (0xFF, 0x55, 0xFF), (0xFF, 0xFF, 0x55), (0xFF, 0xFF, 0xFF)])
 
 
-CAL_PATH = os.path.expanduser("~/.cache/dm16/capture_cal.npy")
+def ideal_palette(ncol):
+    """What each pixel value looks like on screen: (ncol, 3) RGB."""
+    if ncol == 16:
+        return CGA.astype(np.float64)
+    return rgb332_to_rgb(np.arange(256)[None, :])[0].astype(np.float64)
 
 
-def load_cal():
+def screen_colors(cfg):
+    """Colours in the bitstream's frame buffer (0 without HDMI)."""
+    if not cfg or not cfg.get("has_hdmi"):
+        return 0
+    return cfg.get("fb_colors", 256)
+
+
+def cal_path(ncol):
+    name = "capture_cal.npy" if ncol == 256 else f"capture_cal{ncol}.npy"
+    return os.path.expanduser("~/.cache/dm16/" + name)
+
+
+def load_cal(ncol=256):
     try:
-        cal = np.load(CAL_PATH)
-        return cal if cal.shape == (256, 3) else None
+        cal = np.load(cal_path(ncol))
+        return cal if cal.shape == (ncol, 3) else None
     except (OSError, ValueError):
         return None
 
@@ -110,23 +125,22 @@ def blocks_of(shot):
     return shot.reshape(FB_H, 2, FB_W, 2, 3).astype(np.float64).mean(axis=(1, 3))
 
 
-def classify(blocks, cal=None):
-    """RGB332 value of each block: the nearest ideal colour, or with a
-    calibration table the colour the card showed most like it."""
-    if cal is None:
-        return rgb_to_rgb332(blocks)
-    d = ((blocks[..., None, :] - cal[None, None, :, :]) ** 2).sum(-1)
+def classify(blocks, table):
+    """Pixel value of each block: the entry of `table` (the ideal colours,
+    or a calibration of what the card shows) nearest to it."""
+    d = ((blocks[..., None, :] - table[None, None, :, :]) ** 2).sum(-1)
     return d.argmin(-1)
 
 
-def compare(expected_fb, shot, show=5, cal=None):
-    """Compare a capture with the expected frame buffer (RGB332, 240 x 320).
-    Returns (exactly right fraction, mean colour error per channel)."""
+def compare(expected_fb, shot, show=5, cal=None, ncol=256):
+    """Compare a capture with the expected frame buffer (pixel values,
+    240 x 320). Returns (exactly right fraction, mean colour error)."""
+    ideal = ideal_palette(ncol)
     blocks = blocks_of(shot)
-    got = classify(blocks, cal)
+    got = classify(blocks, ideal if cal is None else cal)
     exp = np.asarray(expected_fb, np.int64)
     ok = got == exp
-    err = np.abs(blocks - rgb332_to_rgb(exp)).mean()
+    err = np.abs(blocks - ideal[exp]).mean()
     bad = np.argwhere(~ok)
     for y, x in bad[:show]:
         print(f"  pixel ({x},{y}): screen {int(got[y, x]):02x} "
@@ -135,44 +149,49 @@ def compare(expected_fb, shot, show=5, cal=None):
 
 
 # ------------------------------------------------------------------------------
-# Test pattern: tile mode, one 8x8 (on 64 PEs) tile per FBW, row by row.
-# PE p in tile k writes (37 p + 3 k) mod 256: every colour, no two
-# neighbours alike, so a misplaced pixel or a swapped channel shows.
+# Test pattern: tile mode, one COLS x ROWS tile per FBW (8 x 8 on the
+# Console, 4 x 2 on the 20K), row by row. PE p in tile k, on tile row ty,
+# writes (37 p + 3 k + ty) mod 256: every colour, few neighbours alike, so a
+# misplaced pixel or a swapped channel shows. (With 16 colours only the low
+# 4 bits show; the "+ ty" keeps rows of tiles different even when a row is a
+# multiple of 16 tiles long.)
 # ------------------------------------------------------------------------------
 def pattern_program():
-    tiles = (FB_W // COLS) * (FB_H // ROWS)
     return [
         ctx(CTX_ALWAYS),
-        encode_instr(OP_LDI), put(1),                  # r1 = 3 k
+        encode_instr(OP_LDI), put(1),                  # r1 = 3 k + ty
         FBX(0), FBY(0),
-        LOOP(tiles),
-            alu(ALU_MOV, SRC_ID), alu(ALU_MUL, SRC_IMM, 37), alu(ALU_ADD, SRC_R, 1),
-            FBW(0),
-            get(1), alu(ALU_ADD, SRC_IMM, 3), put(1),
+        LOOP(FB_H // ROWS),
+            LOOP(FB_W // COLS),
+                alu(ALU_MOV, SRC_ID), alu(ALU_MUL, SRC_IMM, 37), alu(ALU_ADD, SRC_R, 1),
+                FBW(0),
+                get(1), alu(ALU_ADD, SRC_IMM, 3), put(1),
+            ENDL,
+            get(1), alu(ALU_ADD, SRC_IMM, 1), put(1),
         ENDL,
     ]
 
 
-def pattern_expected():
+def pattern_expected(ncol=256):
     fb = np.zeros((FB_H, FB_W), np.int64)
     tiles_x = FB_W // COLS
     for k in range((FB_W // COLS) * (FB_H // ROWS)):
         ty, tx = divmod(k, tiles_x)
         for p in range(NUM_PE):
-            fb[ty * ROWS + p // COLS, tx * COLS + p % COLS] = (37 * p + 3 * k) & 255
+            fb[ty * ROWS + p // COLS, tx * COLS + p % COLS] = (37 * p + 3 * k + ty) & (ncol - 1)
     return fb
 
 
-def check_screen(device, expected_fb, png=None, tries=3, cal=None):
+def check_screen(device, expected_fb, png=None, tries=3, cal=None, ncol=256):
     """Grab the screen and compare it with expected_fb; True if every pixel
     matches (using the saved calibration, if there is one)."""
     if cal is None:
-        cal = load_cal()
+        cal = load_cal(ncol)
     for attempt in range(tries):
         shot = grab(device)
         if png:
             save_png(shot, png)
-        frac, err = compare(expected_fb, shot, cal=cal)
+        frac, err = compare(expected_fb, shot, cal=cal, ncol=ncol)
         print(f"capture: {100 * frac:.3f}% of pixels right "
               f"({'calibrated' if cal is not None else 'uncalibrated'}), "
               f"mean colour error {err:.1f}/255")
@@ -181,21 +200,21 @@ def check_screen(device, expected_fb, png=None, tries=3, cal=None):
     return False
 
 
-def calibrate(device, png=None):
+def calibrate(device, png=None, ncol=256):
     """With the test pattern on screen: raw check, then the per-colour
     calibration table, then the check again with it. True if it all matches."""
-    exp = pattern_expected()
+    exp = pattern_expected(ncol)
+    ideal = ideal_palette(ncol)
     shot = grab(device)
     if png:
         save_png(shot, png)
-    raw, err = compare(exp, shot, show=0)
+    raw, err = compare(exp, shot, show=0, ncol=ncol)
     blocks = blocks_of(shot)
-    cal = np.zeros((256, 3))
-    for v in range(256):
+    cal = np.zeros((ncol, 3))
+    for v in range(ncol):
         cal[v] = np.median(blocks[exp == v], axis=0)
-    shifted = [v for v in range(256)
-               if np.abs(cal[v] - rgb332_to_rgb(np.array([[v]]))[0, 0]).max() > 12]
-    good, _ = compare(exp, shot, cal=cal)
+    shifted = [v for v in range(ncol) if np.abs(cal[v] - ideal[v]).max() > 12]
+    good, _ = compare(exp, shot, cal=cal, ncol=ncol)
     print(f"capture: {100 * raw:.2f}% of pixels exactly right against ideal colours "
           f"(mean colour error {err:.1f}/255)")
     if shifted:
@@ -203,9 +222,9 @@ def calibrate(device, png=None):
             f"{v:02x} as {cal[v].round().astype(int).tolist()}" for v in shifted))
     print(f"capture: {100 * good:.3f}% of pixels right against the card's own colours")
     if good == 1.0:
-        os.makedirs(os.path.dirname(CAL_PATH), exist_ok=True)
-        np.save(CAL_PATH, cal)
-        print(f"calibration saved to {CAL_PATH}")
+        os.makedirs(os.path.dirname(cal_path(ncol)), exist_ok=True)
+        np.save(cal_path(ncol), cal)
+        print(f"calibration saved to {cal_path(ncol)}")
         return True
     return False
 
@@ -228,16 +247,16 @@ def main():
         return 0
 
     with open_dm16(args.port) as ser:
-        cfg = read_config(ser)
-        if not cfg or not cfg.get("has_hdmi"):
+        ncol = screen_colors(read_config(ser))
+        if not ncol:
             print("this bitstream has no HDMI output", file=sys.stderr)
             return 1
-        upload_and_run(ser, pattern_program())
-        print("test pattern drawn")
+        upload_and_run(ser, pattern_program(), timeout=30)
+        print(f"test pattern drawn ({ncol} colours)")
     if args.capture:
         if not device:
             ap.error("no capture device found (use --video)")
-        ok = calibrate(device, args.png)
+        ok = calibrate(device, args.png, ncol)
         print("PASS" if ok else "FAIL")
         return 0 if ok else 1
     return 0

@@ -13,7 +13,8 @@ module dm16_uart_seq #(
     parameter integer MEM_AW  = 10,
     parameter         HAS_FPU = 1'b1,
     parameter         RF_BRAM = 1'b0,
-    parameter         HAS_HDMI = 1'b0
+    parameter         HAS_HDMI = 1'b0,
+    parameter integer FB_BITS  = 8      // frame-buffer bits per pixel (8 or 4)
 )(
     input  wire                clk,
     input  wire                rst_n,
@@ -181,7 +182,7 @@ module dm16_uart_seq #(
     //   0x09                      read status byte {6'b0, any_active, running}
     //   0x0B                      read the configuration: 12 bytes
     //                             'D', 16 (format), W, DIMS, LANES, COLS,
-    //                             log2(NREGS), MEM_AW, flags {HAS_HDMI, RF_BRAM, HAS_FPU},
+    //                             log2(NREGS), MEM_AW, flags {FB 16 colours, HAS_HDMI, RF_BRAM, HAS_FPU},
     //                             CLK_HZ / 1000 as 24 bits little-endian
     //   0x0A a_hi a_lo n_hi n_lo  bulk read: n words from address a of every PE
     //                             (enables all PEs, then for each word loads it
@@ -226,7 +227,8 @@ module dm16_uart_seq #(
     localparam [7:0]  CFG_COLS  = COLS;
     localparam [7:0]  CFG_RBITS = log2i(NREGS);
     localparam [7:0]  CFG_AW    = MEM_AW;
-    localparam [7:0]  CFG_FLAGS = (HAS_HDMI ? 8'd4 : 8'd0) | (RF_BRAM ? 8'd2 : 8'd0) |
+    localparam [7:0]  CFG_FLAGS = ((HAS_HDMI && FB_BITS == 4) ? 8'd8 : 8'd0) |
+                                  (HAS_HDMI ? 8'd4 : 8'd0) | (RF_BRAM ? 8'd2 : 8'd0) |
                                   (HAS_FPU ? 8'd1 : 8'd0);
     localparam [95:0] CFG_BYTES = {
         CFG_KHZ, CFG_FLAGS, CFG_AW, CFG_RBITS, CFG_COLS, CFG_LANES, CFG_DIMS, CFG_W,

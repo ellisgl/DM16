@@ -4,7 +4,9 @@
 // syncs, and compare with the frame buffer.
 //   iverilog -s tb -o sim/hdmi.vvp sim/tb_hdmi.v src/dm16_hdmi.v \
 //            ~/Gowin_V1.9.12.04_linux/IDE/simlib/gw5a/prim_sim.v && vvp sim/hdmi.vvp
+// 16-colour mode (Nano 20K): add -Ptb.PB=4
 module tb;
+    parameter PB = 8;
     GSR GSR(.GSRI(1'b1));
     reg clk = 0, clk_pixel = 0, clk_x5 = 0, rst = 1;
     always #10 clk = ~clk;
@@ -16,7 +18,7 @@ module tb;
     reg  [7:0]  wd = 0;
     wire        ckp, ckn;
     wire [2:0]  dp, dn;
-    dm16_hdmi dut (.clk(clk), .fb_we(we), .fb_waddr(wa), .fb_wdata(wd),
+    dm16_hdmi #(.PIX_BITS(PB)) dut (.clk(clk), .fb_we(we), .fb_waddr(wa), .fb_wdata(wd),
                    .clk_pixel(clk_pixel), .clk_x5(clk_x5), .video_rst(rst),
                    .tmds_clk_p(ckp), .tmds_clk_n(ckn), .tmds_d_p(dp), .tmds_d_n(dn));
 
@@ -51,8 +53,16 @@ module tb;
     integer hs_len, vs_seen;
 
     // Expected RGB332 -> 888 expansion
+    reg [23:0] cga [0:15];
+    initial begin
+        cga[0] = 24'h000000; cga[1] = 24'h0000AA; cga[2] = 24'h00AA00; cga[3] = 24'h00AAAA;
+        cga[4] = 24'hAA0000; cga[5] = 24'hAA00AA; cga[6] = 24'hAA5500; cga[7] = 24'hAAAAAA;
+        cga[8] = 24'h555555; cga[9] = 24'h5555FF; cga[10] = 24'h55FF55; cga[11] = 24'h55FFFF;
+        cga[12] = 24'hFF5555; cga[13] = 24'hFF55FF; cga[14] = 24'hFFFF55; cga[15] = 24'hFFFFFF;
+    end
     function [23:0] rgb; input [7:0] p;
-        rgb = {p[7:5], p[7:5], p[7:6], p[4:2], p[4:2], p[4:3], p[1:0], p[1:0], p[1:0], p[1:0]};
+        rgb = (PB == 4) ? cga[p[3:0]] :
+              {p[7:5], p[7:5], p[7:6], p[4:2], p[4:2], p[4:3], p[1:0], p[1:0], p[1:0], p[1:0]};
     endfunction
 
     // Serial check of channel 0: shift in 10 bits per pixel clock
