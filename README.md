@@ -12,8 +12,8 @@ and data over USB serial and reads the results back.
 
 It runs on the Sipeed **Tang Console 138K** (Gowin GW5AST-138) at 50 MHz, and
 in smaller versions on the budget **Tang Nano 20K** and **Tang Nano 9K** (see
-[Boards](#boards)). On the Console, programs can also draw on the board's
-**HDMI port** (see [HDMI output](#hdmi-output)).
+[Boards](#boards)). On the Console and the Nano 20K, programs can also draw
+on the board's **HDMI port** (see [HDMI output](#hdmi-output)).
 
 ![The Mandelbrot set computed on DM16, shown in the terminal](docs/mandelbrot.png)
 
@@ -39,7 +39,7 @@ of 1/4096 apart.*
 | Arithmetic | add/sub/logic, 16 × 16 multiply (low and high halves), barrel shifts, rotates and funnel shifts; bf16 add/sub/mul/compare/convert |
 | Networks | NEWS: 8 × 8 torus, 1 clock per hop. Hypercube: 4 dimensions between clusters, e-cube routing |
 | Sequencer | 4096-instruction program memory, nested hardware loops, jumps, branches on a global OR of all PEs |
-| Video | Console: 320 × 240 frame buffer, 256 colours, on HDMI at 640 × 480 60 Hz; one instruction writes a pixel from every PE |
+| Video | 320 × 240 frame buffer on HDMI at 640 × 480 60 Hz, 256 colours (16 on the Nano 20K); one instruction writes a pixel from every PE |
 | Host link | UART over the board's USB port, 115200 baud at reset, 2 Mbaud in normal use; the USB bridge adds ~6 ms per request and forwards ~80 KB/s to the PC |
 | Clock | 50 MHz from the on-chip PLL |
 | Peak rate | 25 M instructions/s × 64 PEs = 1.6 G 16-bit operations/s |
@@ -52,9 +52,9 @@ No. DOOM needs a general-purpose CPU: one fast thread of branchy,
 pointer-chasing code, several megabytes of memory for the game data, and a
 screen. DM16 is the opposite kind of machine. It has 64 small PEs that all run
 the *same* instruction, 128 KB of memory in total (2 KB per PE), room for 4096
-instructions, and a 320 × 240 frame buffer on the Console's HDMI port (the
-Nanos have no video at all, only a USB serial port that carries about
-80 KB/s back to the PC).
+instructions, and a 320 × 240 frame buffer on the HDMI port (the Nano 9K
+has no video at all, only a USB serial port that carries about 80 KB/s back
+to the PC).
 
 What it *can* do is the part of a 3-D renderer that is genuinely parallel. In
 a Wolfenstein-style ray caster each screen column needs its own ray traced
@@ -421,22 +421,31 @@ The host library hides this, but the UART commands are:
 | `07` | | read every PE's `acc` (2 bytes per PE) |
 | `08` | `d_hi d_lo` | set the UART clocks per bit (baud rate) |
 | `09` | | read status: bit 0 running, bit 1 any PE active |
-| `0B` | | read the configuration: 12 bytes (`'D'`, format, width, dimensions, lanes, columns, log₂ registers, log₂ memory words, flags: bit 0 FPU, bit 1 block-RAM registers, bit 2 HDMI; clock in kHz) |
+| `0B` | | read the configuration: 12 bytes (`'D'`, format, width, dimensions, lanes, columns, log₂ registers, log₂ memory words, flags: bit 0 FPU, bit 1 block-RAM registers, bit 2 HDMI, bit 3 16-colour frame buffer; clock in kHz) |
 | `0A` | `a_hi a_lo n_hi n_lo` | read `n` words from address `a` of every PE (`n` × 2 bytes per PE; above the first 1,024 words it goes through `mar`) |
 
 ## HDMI output
 
 ![The Mandelbrot set on DM16's HDMI output, as an HDMI capture card saw it](docs/hdmi_mandelbrot.png)
 
-*`dm16_mandelbrot.py --hdmi`, photographed by an HDMI capture card: 320 × 240
-in 192 ms including the upload. The PEs write each finished 8 × 8 block
+*`dm16_mandelbrot.py --hdmi` on the Console, photographed by an HDMI capture
+card: 320 × 240 in 192 ms including the upload (2.3 s on the Nano 20K, in 16
+colours). The PEs write each finished 8 × 8 block
 straight into the frame buffer, so nothing is read back over the UART; a zoom
 into the minibrot runs at about 11 frames a second.*
 
-The Tang Console build has a **320 × 240 frame buffer** with one byte per
-pixel (RGB332: `rrrgggbb`), shown on the HDMI port at 640 × 480, 60 Hz, each
-pixel as a 2 × 2 block. It is plain DVI over the HDMI connector (no audio),
-which monitors, TVs and capture cards accept.
+The Tang Console and Tang Nano 20K builds have a **320 × 240 frame buffer**,
+shown on the HDMI port at 640 × 480, 60 Hz, each pixel as a 2 × 2 block. It
+is plain DVI over the HDMI connector (no audio), which monitors, TVs and
+capture cards accept.
+
+* **Console:** 256 colours, one byte per pixel (RGB332: `rrrgggbb`).
+* **Nano 20K:** 16 colours, the CGA palette, taken from the low 4 bits of
+  each byte (0 black, 1 blue, 2 green, 3 cyan, 4 red, 5 magenta, 6 brown,
+  7 light grey, 8 dark grey, then the bright versions of 1–7, 15 white). A
+  256-colour frame buffer needs 38 block RAMs and the 20K has 32 free; 16
+  colours need 19.
+* **Nano 9K:** none (12 block RAMs free, and 82% of its logic in use).
 
 Programs draw with three sequencer instructions:
 
@@ -444,15 +453,15 @@ Programs draw with three sequencer instructions:
 |---|---|
 | `FBX x` | set the drawing position's x (0–319) |
 | `FBY y` | set its y (0–239) |
-| `FBW 0` | **tile**: every PE's `acc[7:0]` becomes one pixel, PE `p` at (x + `p` % 8, y + `p` / 8): an 8 × 8 tile. Then x moves 8 right, wrapping to the next row of tiles at the right edge |
-| `FBW s` | **row** (s = 1–15): PE `p` goes to (x + `p` × s, y). Then x moves 1 right, wrapping to x = 0, y + 1 after s writes, so `FBW 5` five times fills a 320-pixel line |
+| `FBW 0` | **tile**: every PE's `acc[7:0]` becomes one pixel, PE `p` at (x + `p` % `COLS`, y + `p` / `COLS`): an 8 × 8 tile on the Console, 4 × 2 on the 20K. Then x moves one tile right, wrapping to the next row of tiles at the right edge |
+| `FBW s` | **row** (s = 1–15): PE `p` goes to (x + `p` × s, y). Then x moves 1 right, wrapping to x = 0, y + 1 after s writes, so on the Console `FBW 5` five times fills a 320-pixel line (the 20K's 8 PEs cover at most 120 pixels this way) |
 
 `FBW` takes every PE's value whether it is active or not, waits 8 clocks for
-the accumulators to settle, then copies the 64 bytes into the frame buffer
-while the program carries on (the next `FBW` waits if the copy, 64 clocks, is
-not finished). Pixels off the screen are dropped. So the whole 320 × 240
-screen is 1,200 tile writes: drawing costs almost nothing next to computing
-the pixels.
+the accumulators to settle, then copies one byte per PE into the frame buffer
+while the program carries on (the next `FBW` waits if the copy, one clock per
+PE, is not finished). Pixels off the screen are dropped. So the whole
+320 × 240 screen is 1,200 tile writes on the Console (9,600 on the 20K):
+drawing costs almost nothing next to computing the pixels.
 
 ```python
 from dm16_host import *
@@ -474,13 +483,18 @@ against a NumPy model of the board's fixed-point arithmetic. Capture cards
 send YUV, so colours come back slightly off, and some cards shift a few dark
 colours (an EVGA XR1 Lite shows the darkest red, `0x20`, at half brightness).
 The test pattern therefore also serves as a calibration of the card. With it,
-the test pattern and every frame of a 21-frame zoom matched exactly.
+the test pattern and every frame of a 21-frame zoom matched exactly on the
+Console; on the 20K the test pattern matched even before calibration, and
+the Mandelbrot matched too.
 
-**Cost:** about 800 LUTs, 765 flip-flops and 40 block RAMs (the frame buffer),
-plus a second PLL for the 25 MHz pixel clock and 125 MHz serializer clock.
-The system clock's Fmax is unchanged. `HAS_HDMI = 0` in `src/dm16_top.v`
-leaves it all out, and the `FB` instructions become no-ops; the Nano builds
-don't have it (their block RAM is taken by the PE memories).
+**Cost:** on the Console about 800 LUTs, 765 flip-flops and 40 block RAMs
+(the frame buffer), plus a second PLL for the 25 MHz pixel clock and 125 MHz
+serializer clock; the system clock's Fmax is unchanged. On the 20K about 450
+LUTs and 20 block RAMs, with its second PLL making 126 MHz and a clock
+divider 25.2 MHz. `HAS_HDMI = 0` in the board's top file leaves it all out,
+and the `FB` instructions become no-ops. The configuration readback (`0B`)
+reports HDMI in flag bit 2 and 16 colours in bit 3, and the host scripts
+adapt.
 
 The simulation testbenches in `sim/` check the TMDS encoding (decoding a
 whole frame back into pixels, and the serial stream) and the `FBW` placement:
@@ -500,9 +514,9 @@ iverilog -s tb -o sim/fbw.vvp sim/tb_fbw.v src/dm16_fb_writer.v && vvp sim/fbw.v
 | Hypercube / NEWS torus | 4-D / 8 × 8 | 2-D / 4 × 2 | 2-D / 4 × 2 |
 | bf16 FPU | yes | yes | **no**: FPU instructions are no-ops |
 | Clock (Fmax) | 50 MHz (58.3) | 27 MHz (54.2) | 27 MHz (48.9) |
-| Logic used | 73% | 58% | 82% |
+| Logic used | 73% | 61% | 82% |
 | Host link | 2 Mbaud | 1 Mbaud | 1 Mbaud, from reset |
-| HDMI output | 320 × 240, 256 colours | no | no |
+| HDMI output | 320 × 240, 256 colours | 320 × 240, 16 colours | no |
 | `DM16_BOARD` | `console138k` (default) | `nano20k` | `nano9k` |
 | Mandelbrot 80 × 40 | 24 ms | 104 ms | 94 ms |
 | Ray caster | ~40 frames/s | ~30 frames/s | ~45 frames/s |
@@ -578,7 +592,7 @@ stable name, `/dev/tang_console_uart`. `DM16_BAUD` picks another rate (up to
 | `dm16_raycast.py` | Wolfenstein-style ray caster, one ray per PE: W/S or arrows to move, A/D to turn; `--demo` for an autopilot tour, `--ascii` for text shading, `--check` to compare every column with a Python model |
 | `dm16_chat.py` | a 4-bit chat model that generates whole replies on the Tang Console (builds on [Z80-μLM](https://github.com/HarryR/z80ai)); `--check` compares every output value with the integer model, `--test-file` compares whole replies |
 | `dm16_chat_train.py` | trains that model with NumPy (quantization-aware); `--holdout` measures replies to unseen queries |
-| `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--zoom` (and `--loop`) to animate a zoom into a miniature copy of the set, `--check` to compare every pixel with a Python model, `--hdmi` to draw 320 × 240 on the Console's HDMI port (`--capture` checks it through a capture card) |
+| `dm16_mandelbrot.py` | the Mandelbrot set in Q4.12 fixed point, looping with `BANY`; `--color` for colour, `--zoom` (and `--loop`) to animate a zoom into a miniature copy of the set, `--check` to compare every pixel with a Python model, `--hdmi` to draw 320 × 240 on the HDMI port (`--capture` checks it through a capture card) |
 | `dm16_hdmi.py` | HDMI test pattern; `--capture` checks every pixel through a USB HDMI capture card, `--grab` saves a screenshot |
 
 ## Source files
@@ -662,7 +676,7 @@ Some directions that would make good projects, with where to start:
   Console that haven't recurred.
 * **More demos:** image filters on the NEWS grid, bitonic sort or an FFT over
   the hypercube, textures for the ray caster, or the ray caster and Game of
-  Life drawn on the Console's HDMI port (`FBW` with a stride draws whole
+  Life drawn on HDMI (`FBW` with a stride draws whole
   screen lines; see [HDMI output](#hdmi-output)).
 * **A language.** Programs are written as Python lists of instructions. The
   Connection Machine had parallel languages, C* and \*Lisp; something in that

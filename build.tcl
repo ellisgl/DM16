@@ -18,7 +18,7 @@ switch $board {
     }
     nano20k {
         set_device GW2AR-LV18QN88C8/I7 -device_version C
-        set files {boards/dm16_top_nano20k.v boards/tang_nano_20k.cst boards/dm16_27m.sdc}
+        set files {boards/dm16_top_nano20k.v dm16_hdmi.v boards/tang_nano_20k.cst boards/dm16_27m.sdc}
         set top dm16_top_nano20k
     }
     nano9k {

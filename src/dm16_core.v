@@ -18,7 +18,8 @@ module dm16_core #(
     parameter         HAS_FPU  = 1'b1,       // bf16 FPU lanes (0: FPU instructions are no-ops)
     parameter         HAS_HDMI = 1'b0,       // frame-buffer ops FBX/FBY/FBW (0: no-ops)
     parameter integer FB_W     = 320,        // frame buffer, RGB332 (with HAS_HDMI)
-    parameter integer FB_H     = 240
+    parameter integer FB_H     = 240,
+    parameter integer FB_BITS  = 8           // frame-buffer bits per pixel (reported to the host)
 )(
     input  wire       clk,
     input  wire       rst_n,
@@ -67,7 +68,8 @@ module dm16_core #(
         .MEM_AW        (MEM_AW),
         .HAS_FPU       (HAS_FPU),
         .RF_BRAM       (RF_BRAM),
-        .HAS_HDMI      (HAS_HDMI)
+        .HAS_HDMI      (HAS_HDMI),
+        .FB_BITS       (FB_BITS)
     ) u_seq (
         .clk           (clk),
         .rst_n         (rst_n),

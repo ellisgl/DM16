@@ -1,6 +1,8 @@
 `timescale 1ns/1ns
-// DM16 HDMI (DVI) output: a 320x240 RGB332 frame buffer shown at 640x480,
-// 60 Hz, each frame-buffer pixel as a 2x2 block.
+// DM16 HDMI (DVI) output: a 320x240 frame buffer shown at 640x480, 60 Hz,
+// each frame-buffer pixel as a 2x2 block.
+//   PIX_BITS = 8: one byte per pixel, RGB332 (rrrgggbb)        - 38 BSRAMs
+//   PIX_BITS = 4: 16 colours, the CGA palette (index = low 4 bits) - 19 BSRAMs
 //
 //   clk / fb_we / fb_waddr / fb_wdata   write port, system clock (dm16_fb_writer)
 //   clk_pixel (25 MHz), clk_x5 (125 MHz) from the video PLL
@@ -11,7 +13,8 @@
 module dm16_hdmi #(
     parameter integer FB_W  = 320,
     parameter integer FB_H  = 240,
-    parameter integer FB_AW = 17
+    parameter integer FB_AW = 17,
+    parameter integer PIX_BITS = 8
 )(
     // Frame-buffer write port (system clock)
     input  wire             clk,
@@ -36,15 +39,15 @@ module dm16_hdmi #(
     // here, so the BSRAM write enable always comes from a flop.
     // -------------------------------------------------------------------------
     (* syn_ramstyle = "block_ram" *)
-    reg [7:0] fb [0:FB_W*FB_H-1];
+    reg [PIX_BITS-1:0] fb [0:FB_W*FB_H-1];
 
-    reg             we_q;
-    reg [FB_AW-1:0] wa_q;
-    reg [7:0]       wd_q;
+    reg                we_q;
+    reg [FB_AW-1:0]    wa_q;
+    reg [PIX_BITS-1:0] wd_q;
     always @(posedge clk) begin
         we_q <= fb_we;
         wa_q <= fb_waddr;
-        wd_q <= fb_wdata;
+        wd_q <= fb_wdata[PIX_BITS-1:0];
         if (we_q) begin
             fb[wa_q] <= wd_q;
         end
@@ -82,16 +85,30 @@ module dm16_hdmi #(
     end
 
     // Stage 2: the block RAM read
-    reg [7:0] pix;
+    reg [PIX_BITS-1:0] pix;
     always @(posedge clk_pixel) begin
         pix  <= fb[ra];
         ctl2 <= ctl1;
     end
 
-    // RGB332 -> 8 bits per channel
-    wire [7:0] r = {pix[7:5], pix[7:5], pix[7:6]};
-    wire [7:0] g = {pix[4:2], pix[4:2], pix[4:3]};
-    wire [7:0] b = {pix[1:0], pix[1:0], pix[1:0], pix[1:0]};
+    // Pixel -> 8 bits per channel
+    reg [23:0] cga;
+    always @(*) begin
+        case (pix[3:0])
+            4'd0:  cga = 24'h000000;  4'd1:  cga = 24'h0000AA;   // black, blue
+            4'd2:  cga = 24'h00AA00;  4'd3:  cga = 24'h00AAAA;   // green, cyan
+            4'd4:  cga = 24'hAA0000;  4'd5:  cga = 24'hAA00AA;   // red, magenta
+            4'd6:  cga = 24'hAA5500;  4'd7:  cga = 24'hAAAAAA;   // brown, light grey
+            4'd8:  cga = 24'h555555;  4'd9:  cga = 24'h5555FF;   // dark grey, light blue
+            4'd10: cga = 24'h55FF55;  4'd11: cga = 24'h55FFFF;   // light green, light cyan
+            4'd12: cga = 24'hFF5555;  4'd13: cga = 24'hFF55FF;   // light red, light magenta
+            4'd14: cga = 24'hFFFF55;  default: cga = 24'hFFFFFF; // yellow, white
+        endcase
+    end
+    wire [7:0] pix8 = pix;    // zero-extended when PIX_BITS = 4 (unused then)
+    wire [7:0] r = (PIX_BITS == 4) ? cga[23:16] : {pix8[7:5], pix8[7:5], pix8[7:6]};
+    wire [7:0] g = (PIX_BITS == 4) ? cga[15:8]  : {pix8[4:2], pix8[4:2], pix8[4:3]};
+    wire [7:0] b = (PIX_BITS == 4) ? cga[7:0]   : {pix8[1:0], pix8[1:0], pix8[1:0], pix8[1:0]};
 
     // Stage 3: TMDS encoding (channel 0 carries the syncs)
     wire [9:0] sym0, sym1, sym2;

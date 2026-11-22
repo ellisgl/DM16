@@ -421,7 +421,7 @@ def read_config(ser):
         return None
     return dict(w=b[2], dims=b[3], lanes=b[4], cols=b[5], nregs=1 << b[6],
                 mem_words=1 << b[7], has_fpu=bool(b[8] & 1), rf_bram=bool(b[8] & 2),
-                has_hdmi=bool(b[8] & 4),
+                has_hdmi=bool(b[8] & 4), fb_colors=16 if b[8] & 8 else 256,
                 clk_hz=int.from_bytes(b[9:12], "little") * 1000)
 
 
