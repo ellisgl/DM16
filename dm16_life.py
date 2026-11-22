@@ -22,9 +22,16 @@ going off the right edge brings you back on the left, one row down.
   Nano 20K:  80 x  60 cells (20 x 30 tiles), each 4 x 4 pixels
   Nano 9K:   80 x  60 cells (20 x 30 tiles), each 2 x 2 pixels (160 x 120 screen)
 
-A generation computes every tile (state in bit 0, the next state written to
-bit 1), then a second pass shifts the next state down and draws each tile
-with one zoomed FBW. The starting universe is random, made on the board.
+A generation computes every tile (the next state, from a rule table in PE
+memory, goes into the top byte of the cell's word), then a second pass
+moves it down and draws each tile with one zoomed FBW through a palette.
+The starting universe is random, made on the board.
+
+--rule picks another rule: a name (--list-rules), Life-like B/S notation
+(B36/S23 is HighLife), or a Generations rule B/S/C with C states, where a
+live cell that doesn't survive fades through C - 2 dying states before it
+is dead (B2/S/C3 is Brian's Brain). Dying cells aren't counted as
+neighbours, and fade from orange to purple on the screen.
 """
 import argparse
 import struct
@@ -43,7 +50,7 @@ from dm16_host import (
     SRC_R, SRC_IMM, SRC_ID, SRC_MEM, CTX_ALWAYS, CTX_IF_Z,
     NEWS_N, NEWS_E, NEWS_W, NEWS_S,
     LOOP, ENDL, FBX, FBY, FBW,
-    alu, ctx, put, get, ldi16, encode_instr, inject_instr, read_mem_grid, read_mem_block,
+    alu, ctx, put, get, ldi16, stm, encode_instr, inject_instr, read_mem_grid, read_mem_block,
     per_pe_words_program, read_config, upload_and_run, wait_idle, assemble,
 )
 
@@ -250,6 +257,89 @@ class Universe:
         return d
 
 
+# Named rules, B (born) / S (survive) / C (states, for Generations rules)
+RULES = {
+    "life":       ("B3/S23",            "Conway's Game of Life"),
+    "highlife":   ("B36/S23",           "almost Life, with a self-copying pattern"),
+    "daynight":   ("B3678/S34678",      "Day & Night: live and dead behave alike"),
+    "seeds":      ("B2/S",              "nothing survives; explodes into sparks"),
+    "maze":       ("B3/S12345",         "grows into mazes"),
+    "lwod":       ("B3/S012345678",     "Life without Death: cells never die"),
+    "diamoeba":   ("B35678/S5678",      "big wobbling diamond blobs"),
+    "morley":     ("B368/S245",         "Morley (Move): many moving patterns"),
+    "anneal":     ("B4678/S35678",      "noise melts into smooth blobs"),
+    "replicator": ("B1357/S1357",       "every pattern copies itself"),
+    "2x2":        ("B36/S125",          "patterns of 2 x 2 blocks"),
+    "brain":      ("B2/S/C3",           "Brian's Brain: on, dying, off"),
+    "starwars":   ("B2/S345/C4",        "Star Wars: Generations rule with ships"),
+    "frogs":      ("B34/S12/C3",        "Frogs: Generations rule with hopping blobs"),
+}
+MAX_STATES = 16
+
+
+class Rule:
+    """A Life-like (B/S) or Generations (B/S/C) rule. Cell values on the
+    board: 0 dead, 1 alive, 2k for the k-th dying state (k = 1..C-2). Only
+    1 is odd, so bit 0 is "alive", which is all the neighbour count needs."""
+
+    def __init__(self, text):
+        name = text.lower()
+        spec = RULES[name][0] if name in RULES else text.upper()
+        parts = spec.split("/")
+        try:
+            if not (2 <= len(parts) <= 3 and parts[0][0] == "B" and parts[1][0] == "S"):
+                raise ValueError
+            self.born = {int(ch) for ch in parts[0][1:]}
+            self.survive = {int(ch) for ch in parts[1][1:]}
+            self.states = int(parts[2].lstrip("C")) if len(parts) == 3 else 2
+        except (ValueError, IndexError):
+            raise ValueError(f"rule {text!r}: use a name ({', '.join(RULES)}), "
+                             "B<digits>/S<digits> or B<digits>/S<digits>/C<states>")
+        if max(self.born | self.survive, default=0) > 8 or not 2 <= self.states <= MAX_STATES:
+            raise ValueError(f"rule {text!r}: neighbour counts 0..8, states 2..{MAX_STATES}")
+        self.spec = "B{}/S{}".format("".join(map(str, sorted(self.born))),
+                                     "".join(map(str, sorted(self.survive))))
+        if self.states > 2:
+            self.spec += f"/C{self.states}"
+        self.vmax = 2 * (self.states - 2) if self.states > 2 else 1
+
+    def next_value(self, v, n):
+        if v == 0:
+            return 1 if n in self.born else 0
+        if v == 1:
+            if n in self.survive:
+                return 1
+            return 2 if self.states > 2 else 0
+        k = v // 2 + 1                                 # next dying state
+        return 2 * k if k <= self.states - 2 else 0
+
+    def table(self):
+        """next value, indexed by value * 9 + live neighbours"""
+        return [self.next_value(v, n) if v <= 1 or v % 2 == 0 else 0
+                for v in range(self.vmax + 1) for n in range(9)]
+
+    def palette(self, ncol, alive=None):
+        """Pixel value for each cell value: black, the live colour, then the
+        dying states fading from orange to dark purple."""
+        from dm16_hdmi import CGA
+        from dm16_host import rgb332
+
+        def pix(rgb):
+            if ncol == 16:
+                return 1 + int(((CGA[1:] - np.array(rgb)) ** 2).sum(1).argmin())
+            return rgb332(*rgb) or 1
+
+        live = (64, 255, 64) if self.states == 2 else (255, 255, 160)
+        pal = [0] * (self.vmax + 1)
+        pal[1] = alive if alive is not None else pix(live)
+        dying = self.states - 2
+        for k in range(1, dying + 1):
+            t = (k - 1) / max(1, dying - 1)
+            rgb = [round(a + (b - a) * t) for a, b in zip((255, 128, 0), (96, 0, 128))]
+            pal[2 * k] = pix(rgb)
+        return pal
+
+
 def life_setup_program(u, seed):
     """Random universe (about 1 cell in 4 alive) made on the board with a
     16-bit xorshift per PE; the per-PE direction offsets are written by the
@@ -278,9 +368,26 @@ def offset_programs(u):
     return progs
 
 
-def life_hdmi_program(u, generations, colour):
-    """`generations` generations, each drawn when it is done."""
+def tables_program(u, table, pal):
+    """The same rule table and palette in every PE, after the universe."""
+    tab = u.st0 + u.nt + u.halo
+    pal_at = tab + len(table)
+    if pal_at + len(pal) > OFF:
+        raise ValueError("rule tables don't fit in PE memory")
+    prog = [ctx(CTX_ALWAYS)]
+    for j, v in enumerate(table):
+        prog += [*ldi16(v), stm(tab + j)]
+    for j, v in enumerate(pal):
+        prog += [*ldi16(v), stm(pal_at + j)]
+    prog += [*ldi16(tab), stm(OFF + 9), *ldi16(pal_at), stm(OFF + 10)]
+    return prog
+
+
+def life_hdmi_program(u, generations):
+    """`generations` generations, each drawn when it is done. The rule and
+    the colours come from the tables in PE memory (tables_program)."""
     i = lambda op, v: alu(op, SRC_IMM, v & 0x3FF)
+    me = [get(1), alu(ALU_ADD, SRC_MEM, OFF + 8), encode_instr(OP_MAR)]   # mar = this cell
 
     def copy(src, dst, n):                         # mem[dst + j] = mem[src + j], j < n
         return [
@@ -308,45 +415,47 @@ def life_hdmi_program(u, generations, colour):
             # wrap-around copies: before tile 0 the last tiles, after the last tile the first
             *copy(u.st0 + u.nt - u.halo, 0, u.halo),
             *copy(u.st0, u.st0 + u.nt, u.halo),
-            # every tile: r2 = live neighbours, r3 = this cell; bit 1 = next state
+            # every tile: r2 = live neighbours, r3 = this cell's value; the
+            # next value (from the rule table) goes into bits 15..8
             encode_instr(OP_LDI), put(1),               # r1 = tile
             LOOP(u.nt),
                 *count,
-                get(1), alu(ALU_ADD, SRC_MEM, OFF + 8), encode_instr(OP_MAR),
-                encode_instr(OP_LDX), put(3),
-                encode_instr(OP_LDI), put(4),                          # dies...
-                get(2), i(ALU_SUB, 3), ctx(CTX_IF_Z), i(ALU_MOV, 2), put(4),   # ...unless 3
-                ctx(CTX_ALWAYS), get(2), i(ALU_SUB, 2), ctx(CTX_IF_Z),
-                get(3), alu(ALU_SHL), put(4),                          # ...or 2 and alive
-                ctx(CTX_ALWAYS), get(4), alu(ALU_OR, SRC_R, 3), encode_instr(OP_STX),
+                *me, encode_instr(OP_LDX), i(ALU_AND, 0xFF), put(3),
+                i(ALU_MUL, 9), alu(ALU_ADD, SRC_R, 2), alu(ALU_ADD, SRC_MEM, OFF + 9),
+                encode_instr(OP_MAR), encode_instr(OP_LDX),
+                i(ALU_SHLN, 8), alu(ALU_OR, SRC_R, 3), put(4),
+                *me, get(4), encode_instr(OP_STX),
                 get(1), i(ALU_ADD, 1), put(1),
             ENDL,
-            # next state -> state, and draw
-            encode_instr(OP_MAR, src_sel=1, imm10=u.st0), FBX(0), FBY(0),
+            # next value -> value, and draw it through the palette
+            encode_instr(OP_LDI), put(1), FBX(0), FBY(0),
             LOOP(u.nt),
-                encode_instr(OP_LDX), alu(ALU_SHR), encode_instr(OP_STX, flag_ctl=MEM_INC),
-                i(ALU_MUL, colour), FBW(0, u.zoom),
+                *me, encode_instr(OP_LDX), i(ALU_SHRN, 8), encode_instr(OP_STX),
+                alu(ALU_ADD, SRC_MEM, OFF + 10), encode_instr(OP_MAR), encode_instr(OP_LDX),
+                FBW(0, u.zoom),
+                get(1), i(ALU_ADD, 1), put(1),
             ENDL,
         ENDL,
     ]
 
 
 def read_universe(ser, u):
-    """The board's universe as (NT, ROWS, COLS) 0/1."""
+    """The board's universe as (NT, ROWS, COLS) cell values."""
     blocks = read_mem_block(ser, u.st0, u.nt)
-    return np.array(blocks, np.int64).reshape(u.nt, ROWS, COLS) & 1
+    return np.array(blocks, np.int64).reshape(u.nt, ROWS, COLS) & 0xFF
 
 
-def model_step(u, s):
+def model_step(u, s, table):
     """One generation of the same twisted torus, in tile-and-PE space."""
     n = np.zeros_like(s)
+    alive = (s == 1).astype(np.int64)
     rr, cc = np.meshgrid(np.arange(ROWS), np.arange(COLS), indexing="ij")
     for dx, dy in DIRS:
         sr, sc = (rr + dy) % ROWS, (cc + dx) % COLS            # source PE of each PE
         delta = np.vectorize(lambda r, c: u.source_tile_delta(dx, dy, r, c))(sr, sc)
         k = (np.arange(u.nt)[:, None, None] + delta[None]) % u.nt
-        n += s[k, sr[None], sc[None]]
-    return ((n == 3) | ((n == 2) & (s == 1))).astype(np.int64)
+        n += alive[k, sr[None], sc[None]]
+    return np.asarray(table, np.int64)[s * 9 + n]
 
 
 def to_cells(u, s):
@@ -356,23 +465,28 @@ def to_cells(u, s):
 
 def main_hdmi(args):
     import dm16_hdmi
+    try:
+        rule = Rule(args.rule)
+    except ValueError as e:
+        raise SystemExit(str(e))
     with open_dm16(args.port) as ser:
         ncol = dm16_hdmi.configure(read_config(ser))
         if not ncol:
             raise SystemExit("this bitstream has no HDMI output")
         u = Universe(dm16_hdmi.FB_W, dm16_hdmi.FB_H)
-        colour = args.colour if args.colour is not None else (0x1C if ncol == 256 else 10)
-        print(f"universe {u.w} x {u.h} cells ({u.tx} x {u.ty} tiles of {COLS} x {ROWS}, "
-              f"{u.nt} cells per PE), shown {u.zoom} x {u.zoom}")
+        table, pal = rule.table(), rule.palette(ncol, args.colour)
+        print(f"rule {rule.spec}: universe {u.w} x {u.h} cells ({u.tx} x {u.ty} tiles of "
+              f"{COLS} x {ROWS}, {u.nt} cells per PE), shown {u.zoom} x {u.zoom}")
         for prog in offset_programs(u):
             upload_and_run(ser, prog)
+        upload_and_run(ser, tables_program(u, table, pal))
         upload_and_run(ser, life_setup_program(u, args.seed))
         state = read_universe(ser, u) if (args.check or args.capture) else None
         device = dm16_hdmi.find_capture_device() if args.capture else None
         if args.capture and not device:
             raise SystemExit("no capture device found")
 
-        prog = life_hdmi_program(u, args.per_run, colour)
+        prog = life_hdmi_program(u, args.per_run)
         n_instr = len(assemble(prog))
         bad = runs = 0
         t0 = time.monotonic()
@@ -394,7 +508,7 @@ def main_hdmi(args):
                         f"({runs * args.per_run / (time.monotonic() - t0):.0f} generations/s)")
                 if state is not None:
                     for _ in range(args.per_run):
-                        state = model_step(u, state)
+                        state = model_step(u, state, table)
                     board = read_universe(ser, u)
                     ok = np.array_equal(board, state)
                     line += f"  universe {'matches' if ok else 'DIFFERS from'} the model"
@@ -402,8 +516,8 @@ def main_hdmi(args):
                         bad += 1
                         state = board
                     if device:
-                        cells = to_cells(u, state)
-                        fb = np.kron(cells, np.ones((u.zoom, u.zoom), np.int64)) * colour
+                        cells = np.asarray(pal, np.int64)[to_cells(u, state)]
+                        fb = np.kron(cells, np.ones((u.zoom, u.zoom), np.int64))
                         full = np.zeros((dm16_hdmi.FB_H, dm16_hdmi.FB_W), np.int64)
                         full[:fb.shape[0], :fb.shape[1]] = fb
                         print(line, flush=True)
@@ -423,6 +537,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Conway's Game of Life on DM16")
     ap.add_argument("--port", default=None)
     ap.add_argument("--hdmi", action="store_true", help="big universe on the HDMI output")
+    ap.add_argument("--rule", default="life",
+                    help="--hdmi: a name (see --list-rules), B3/S23-style, or B2/S/C3-style "
+                         "with a number of states")
+    ap.add_argument("--list-rules", action="store_true", help="show the named rules")
     ap.add_argument("--fps", type=float, default=15,
                     help="--hdmi: generations per second to show (0: as fast as it goes)")
     ap.add_argument("--per-run", type=int, default=1,
@@ -430,10 +548,14 @@ if __name__ == "__main__":
     ap.add_argument("--runs", type=int, default=0, help="--hdmi: program runs (0: until Ctrl-C)")
     ap.add_argument("--seed", type=int, default=1, help="--hdmi: random start")
     ap.add_argument("--colour", type=int, help="--hdmi: live cell colour (pixel value)")
-    ap.add_argument("--check", action="store_true", help="--hdmi: compare with a NumPy Life after each run")
+    ap.add_argument("--check", action="store_true", help="--hdmi: compare with a NumPy model after each run")
     ap.add_argument("--capture", action="store_true", help="--hdmi: also check the screen with a capture card")
     ap.add_argument("--png", help="--capture: save the capture here")
     a = ap.parse_args()
+    if a.list_rules:
+        for name, (spec, what) in RULES.items():
+            print(f"  {name:11s} {spec:16s} {what}")
+        raise SystemExit(0)
     if a.hdmi:
         raise SystemExit(main_hdmi(a))
     raise SystemExit(main(a.port))
