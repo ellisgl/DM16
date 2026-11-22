@@ -8,12 +8,12 @@ set root [file normalize [file dirname [info script]]]
 set board console138k
 if {[info exists ::env(DM16_BOARD)]} { set board $::env(DM16_BOARD) }
 
-set common {dm16_core.v dm16_uart_seq.v dm16_cluster.v dm16_pe.v dm16_bf16.v hypercube_router.v}
+set common {dm16_core.v dm16_fb_writer.v dm16_uart_seq.v dm16_cluster.v dm16_pe.v dm16_bf16.v hypercube_router.v}
 
 switch $board {
     console138k {
         set_device GW5AST-LV138PG484AC1/I0 -device_version B
-        set files {dm16_top.v dm16_pll.v pll_init.v dm16.cst dm16.sdc}
+        set files {dm16_top.v dm16_pll.v pll_init.v dm16_hdmi.v dm16.cst dm16.sdc}
         set top dm16_top
     }
     nano20k {

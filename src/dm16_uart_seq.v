@@ -12,7 +12,8 @@ module dm16_uart_seq #(
     parameter integer NREGS   = 8,
     parameter integer MEM_AW  = 10,
     parameter         HAS_FPU = 1'b1,
-    parameter         RF_BRAM = 1'b0
+    parameter         RF_BRAM = 1'b0,
+    parameter         HAS_HDMI = 1'b0
 )(
     input  wire                clk,
     input  wire                rst_n,
@@ -27,7 +28,13 @@ module dm16_uart_seq #(
     // Live status from 64-PE array
     input  wire [NUM_PE-1:0]   all_ctx,
     input  wire [NUM_PE*W-1:0] all_acc,
-    input  wire                any_active   // registered global OR of all_ctx
+    input  wire                any_active,  // registered global OR of all_ctx
+
+    // Frame-buffer ops (FBX/FBY/FBW) for dm16_fb_writer
+    output reg                 fb_op,
+    output reg  [1:0]          fb_sel,      // 0 FBX, 1 FBY, 2 FBW
+    output reg  [15:0]         fb_field,
+    input  wire                fb_busy
 );
 
     // =========================================================================
@@ -174,7 +181,7 @@ module dm16_uart_seq #(
     //   0x09                      read status byte {6'b0, any_active, running}
     //   0x0B                      read the configuration: 12 bytes
     //                             'D', 16 (format), W, DIMS, LANES, COLS,
-    //                             log2(NREGS), MEM_AW, flags {RF_BRAM, HAS_FPU},
+    //                             log2(NREGS), MEM_AW, flags {HAS_HDMI, RF_BRAM, HAS_FPU},
     //                             CLK_HZ / 1000 as 24 bits little-endian
     //   0x0A a_hi a_lo n_hi n_lo  bulk read: n words from address a of every PE
     //                             (enables all PEs, then for each word loads it
@@ -219,7 +226,8 @@ module dm16_uart_seq #(
     localparam [7:0]  CFG_COLS  = COLS;
     localparam [7:0]  CFG_RBITS = log2i(NREGS);
     localparam [7:0]  CFG_AW    = MEM_AW;
-    localparam [7:0]  CFG_FLAGS = (RF_BRAM ? 8'd2 : 8'd0) | (HAS_FPU ? 8'd1 : 8'd0);
+    localparam [7:0]  CFG_FLAGS = (HAS_HDMI ? 8'd4 : 8'd0) | (RF_BRAM ? 8'd2 : 8'd0) |
+                                  (HAS_FPU ? 8'd1 : 8'd0);
     localparam [95:0] CFG_BYTES = {
         CFG_KHZ, CFG_FLAGS, CFG_AW, CFG_RBITS, CFG_COLS, CFG_LANES, CFG_DIMS, CFG_W,
         8'd16, 8'h44 };                    // byte 0 = 'D' (sent first)
@@ -484,13 +492,19 @@ module dm16_uart_seq #(
     //   F3 BANY  addr  branch if any PE is active (global OR of contexts)
     //   F4 BNONE addr  branch if no PE is active
     //   F5 HALT
+    //   F6 FBX   x     frame-buffer x = instr[8:0]       (HDMI builds;
+    //   F7 FBY   y     frame-buffer y = instr[7:0]        no-ops without)
+    //   F8 FBW   s     write every PE's ACC[7:0] as a pixel (dm16_fb_writer.v);
+    //                  waits GOR_WAIT clocks for the ACCs to settle, and for
+    //                  the previous FBW's copy to finish
     // A branch waits GOR_WAIT clocks before sampling any_active, which covers
     // the instruction broadcast pipeline (cluster + PE registers), the PE
     // update and the two-stage OR tree, so it always sees the result of the
     // preceding SET_CTX.
     localparam integer GOR_WAIT = 8;
     localparam [3:0] C_LOOP = 4'h0, C_ENDL = 4'h1, C_JMP = 4'h2,
-                     C_BANY = 4'h3, C_BNONE = 4'h4, C_HALT = 4'h5;
+                     C_BANY = 4'h3, C_BNONE = 4'h4, C_HALT = 4'h5,
+                     C_FBX  = 4'h6, C_FBY   = 4'h7, C_FBW  = 4'h8;
 
     reg mem_wait, mem_wait2, fp_wait;
     reg [23:0] fetched_instr;
@@ -547,8 +561,12 @@ module dm16_uart_seq #(
             lp_sp         <= 0;
             gor_cnt       <= 0;
             gor_armed     <= 0;
+            fb_op         <= 0;
+            fb_sel        <= 0;
+            fb_field      <= 0;
         end else begin
             instr_valid <= 0;
+            fb_op       <= 0;
 
             if (rx_valid && (cmd_state == 4'd0) && (rx_byte == 8'h04)) begin
                 pc         <= 0;
@@ -630,6 +648,29 @@ module dm16_uart_seq #(
                             end
                         end
                         C_HALT: pc <= end_pc;   // the loader stops when pc == end_pc
+                        C_FBX, C_FBY: begin
+                            fb_op    <= 1'b1;
+                            fb_sel   <= (ctl_op == C_FBX) ? 2'd0 : 2'd1;
+                            fb_field <= ctl_cnt;
+                            pc       <= pc + 1'b1;
+                        end
+                        C_FBW: begin
+                            if (!gor_armed) begin
+                                gor_armed <= 1'b1;
+                                gor_cnt   <= GOR_WAIT;
+                                imem_wait <= 1'b0;
+                            end else if (gor_cnt != 4'd0 || fb_busy) begin
+                                if (gor_cnt != 4'd0)
+                                    gor_cnt <= gor_cnt - 4'd1;
+                                imem_wait <= 1'b0;
+                            end else begin
+                                gor_armed <= 1'b0;
+                                fb_op     <= 1'b1;
+                                fb_sel    <= 2'd2;
+                                fb_field  <= ctl_cnt;
+                                pc        <= pc + 1'b1;
+                            end
+                        end
                         default: pc <= pc + 1'b1;
                     endcase
                 end else begin

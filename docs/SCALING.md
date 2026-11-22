@@ -18,6 +18,8 @@ already a parameter, what it costs, and what would have to change.
 | `MEM_AW` | `dm16_core` | 10 | PE memory = 2^`MEM_AW` words (1,024 on the Tang) |
 | `GOWIN_SP` | `dm16_core` | 1 | PE memories from Gowin `SP` block RAMs (1) or inferred RAM (0, for any other FPGA) |
 | `HAS_RF` | `dm16_pe` | 1 | registers `r1` and up; without them every `r[n]` is `b` |
+| `HAS_FPU` | `dm16_core` | 1 (0 on the Nano 9K) | bf16 FPU in every PE; without it FPU instructions are no-ops |
+| `HAS_HDMI` | `dm16_top` (Console), `dm16_core` | 1 | 320×240 RGB332 frame buffer on HDMI and the `FBX`/`FBY`/`FBW` ops; without it they are no-ops (Console only: the Nanos lack the block RAM) |
 
 PEs = 2^`DIMS` × `LANES`. The Tang build sets all of these in `dm16_top.v`.
 The host library has matching constants (`DIMS`, `LANES`, `COLS`,
