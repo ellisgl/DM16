@@ -1,13 +1,19 @@
 `timescale 1ns/1ns
-// Tang Console 138K (GW5AST-138) system clock:
-//   50 MHz in -> VCO 1200 MHz (x24) -> CLKOUT0 = 1200 / ODIV MHz
+// Tang Console 138K (GW5AST-138) PLL:
+//   50 MHz in -> VCO 50 * MDIV MHz -> CLKOUT0 = VCO / ODIV, CLKOUT1 = VCO / ODIV1
+// The system clock uses MDIV 24 (VCO 1200 MHz); the HDMI clocks use a second
+// instance with MDIV 20 (VCO 1000 MHz): 125 MHz (/8) and 25 MHz (/40).
 // PLL_INIT (pll_init.v, from Gowin's generated IP) calibrates the charge
 // pump / loop filter at start-up and resets the PLL until it locks.
 module dm16_pll #(
-    parameter integer ODIV = 16          // 1200 / 16 = 75 MHz
+    parameter integer ODIV  = 16,        // 1200 / 16 = 75 MHz
+    parameter integer MDIV  = 24,        // VCO = 50 MHz * MDIV
+    parameter integer ODIV1 = 8,
+    parameter         EN1   = "FALSE"    // "TRUE": CLKOUT1 enabled
 )(
     input  wire clkin,                   // 50 MHz
     output wire clkout,
+    output wire clkout1,
     output wire lock
 );
 
@@ -21,18 +27,18 @@ module dm16_pll #(
         .FCLKIN           ("50"),
         .IDIV_SEL         (1),
         .FBDIV_SEL        (1),
-        .MDIV_SEL         (24),
+        .MDIV_SEL         (MDIV),
         .MDIV_FRAC_SEL    (0),
         .ODIV0_SEL        (ODIV),
         .ODIV0_FRAC_SEL   (0),
-        .ODIV1_SEL        (8),
+        .ODIV1_SEL        (ODIV1),
         .ODIV2_SEL        (8),
         .ODIV3_SEL        (8),
         .ODIV4_SEL        (8),
         .ODIV5_SEL        (8),
         .ODIV6_SEL        (8),
         .CLKOUT0_EN       ("TRUE"),
-        .CLKOUT1_EN       ("FALSE"),
+        .CLKOUT1_EN       (EN1),
         .CLKOUT2_EN       ("FALSE"),
         .CLKOUT3_EN       ("FALSE"),
         .CLKOUT4_EN       ("FALSE"),
@@ -115,7 +121,7 @@ module dm16_pll #(
     ) u_pll (
         .LOCK          (pll_lock),
         .CLKOUT0       (clkout),
-        .CLKOUT1       (unused_clkout1),
+        .CLKOUT1       (clkout1),
         .CLKOUT2       (unused_clkout2),
         .CLKOUT3       (unused_clkout3),
         .CLKOUT4       (unused_clkout4),
@@ -165,7 +171,7 @@ module dm16_pll #(
 
     PLL_INIT #(
         .CLK_PERIOD (20),      // 50 MHz input
-        .MULTI_FAC  (24)
+        .MULTI_FAC  (MDIV)
     ) u_pll_init (
         .CLKIN   (clkin),
         .I_RST   (1'b0),

@@ -234,6 +234,7 @@ def send(dest, mode=DEST_IMM):
 #   upload_and_run(ser, prog)        # labels are resolved automatically
 # ==============================================================================
 SEQ_LOOP, SEQ_ENDL, SEQ_JMP, SEQ_BANY, SEQ_BNONE, SEQ_HALT = 0, 1, 2, 3, 4, 5
+SEQ_FBX, SEQ_FBY, SEQ_FBW = 6, 7, 8
 
 
 def _seq(op, field=0):
@@ -259,6 +260,40 @@ def LOOP(n):
 
 ENDL = _seq(SEQ_ENDL)
 HALT = _seq(SEQ_HALT)
+
+
+# Frame buffer (HDMI builds, 320x240 RGB332: rrrgggbb; no-ops without HDMI)
+FB_W, FB_H = 320, 240
+
+
+def FBX(x):
+    """Frame-buffer x for the next FBW (0..319)."""
+    if not 0 <= x < 512:
+        raise ValueError("FBX: x must be 0..511")
+    return _seq(SEQ_FBX, x)
+
+
+def FBY(y):
+    """Frame-buffer y for the next FBW (0..239)."""
+    if not 0 <= y < 256:
+        raise ValueError("FBY: y must be 0..255")
+    return _seq(SEQ_FBY, y)
+
+
+def FBW(stride=0):
+    """Write every PE's ACC[7:0] (RGB332) to the frame buffer, all PEs whether
+    active or not. stride 0 (tile): PE p goes to (x + p % COLS, y + p // COLS),
+    then x += COLS, wrapping to x = 0, y += ROWS at the right edge. stride s
+    (row, 1..15): PE p goes to (x + p * s, y), then x += 1, wrapping to x = 0,
+    y += 1 after s writes. Pixels outside 320x240 are dropped."""
+    if not 0 <= stride <= 15:
+        raise ValueError("FBW: stride must be 0..15")
+    return _seq(SEQ_FBW, stride)
+
+
+def rgb332(r, g, b):
+    """8-bit colour from 0..255 components."""
+    return (r & 0xE0) | ((g >> 3) & 0x1C) | (b >> 6)
 
 
 def JMP(target):
@@ -386,6 +421,7 @@ def read_config(ser):
         return None
     return dict(w=b[2], dims=b[3], lanes=b[4], cols=b[5], nregs=1 << b[6],
                 mem_words=1 << b[7], has_fpu=bool(b[8] & 1), rf_bram=bool(b[8] & 2),
+                has_hdmi=bool(b[8] & 4),
                 clk_hz=int.from_bytes(b[9:12], "little") * 1000)
 
 

@@ -15,7 +15,10 @@ module dm16_core #(
     parameter integer NREGS    = 8,          // PE registers r0..r[NREGS-1]: a power of two, 2..1024
     parameter         RF_BRAM  = 1'b0,       // registers in block RAM (1) or flip-flops (0)
     parameter integer MEM_AW   = 10,         // PE memory = 2^MEM_AW words (<= W; <= 13 with GOWIN_SP)
-    parameter         HAS_FPU  = 1'b1        // bf16 FPU lanes (0: FPU instructions are no-ops)
+    parameter         HAS_FPU  = 1'b1,       // bf16 FPU lanes (0: FPU instructions are no-ops)
+    parameter         HAS_HDMI = 1'b0,       // frame-buffer ops FBX/FBY/FBW (0: no-ops)
+    parameter integer FB_W     = 320,        // frame buffer, RGB332 (with HAS_HDMI)
+    parameter integer FB_H     = 240
 )(
     input  wire       clk,
     input  wire       rst_n,
@@ -25,7 +28,12 @@ module dm16_core #(
     // Status for board LEDs
     output wire       running,
     output wire [3:0] quarter_active,   // some PE active in each quarter of the array
-    output wire       all_active
+    output wire       all_active,
+
+    // Frame-buffer write port, to dm16_hdmi (idle without HAS_HDMI)
+    output wire        fb_we,
+    output wire [16:0] fb_waddr,
+    output wire [7:0]  fb_wdata
 );
 
     localparam integer NODES     = 1 << DIMS;
@@ -42,6 +50,10 @@ module dm16_core #(
     reg  [NODES-1:0]    cluster_any;   // global OR, stage 1
     reg                 any_active;    // global OR, stage 2 (to the sequencer)
 
+    wire        fb_op, fb_busy;    // frame-buffer ops (HDMI option)
+    wire [1:0]  fb_sel;
+    wire [15:0] fb_field;
+
     // 1. UART host loader & global SIMD sequencer
     dm16_uart_seq #(
         .CLK_HZ        (CLK_HZ),
@@ -54,7 +66,8 @@ module dm16_core #(
         .NREGS         (NREGS),
         .MEM_AW        (MEM_AW),
         .HAS_FPU       (HAS_FPU),
-        .RF_BRAM       (RF_BRAM)
+        .RF_BRAM       (RF_BRAM),
+        .HAS_HDMI      (HAS_HDMI)
     ) u_seq (
         .clk           (clk),
         .rst_n         (rst_n),
@@ -65,8 +78,42 @@ module dm16_core #(
         .running       (running),
         .all_ctx       (all_ctx),
         .all_acc       (all_acc),
-        .any_active    (any_active)
+        .any_active    (any_active),
+        .fb_op         (fb_op),
+        .fb_sel        (fb_sel),
+        .fb_field      (fb_field),
+        .fb_busy       (fb_busy)
     );
+
+    // Frame-buffer writer (HDMI option)
+    generate
+        if (HAS_HDMI) begin : gen_fb
+            dm16_fb_writer #(
+                .NUM_PE (NUM_PE),
+                .W      (W),
+                .COLS   (COLS),
+                .FB_W   (FB_W),
+                .FB_H   (FB_H),
+                .FB_AW  (17)
+            ) u_fbw (
+                .clk      (clk),
+                .rst_n    (rst_n),
+                .op       (fb_op),
+                .sel      (fb_sel),
+                .field    (fb_field),
+                .all_acc  (all_acc),
+                .busy     (fb_busy),
+                .fb_we    (fb_we),
+                .fb_waddr (fb_waddr),
+                .fb_wdata (fb_wdata)
+            );
+        end else begin : gen_no_fb
+            assign fb_busy  = 1'b0;
+            assign fb_we    = 1'b0;
+            assign fb_waddr = 17'd0;
+            assign fb_wdata = 8'd0;
+        end
+    endgenerate
 
     // Global OR of every PE's context flag (CM-2 style), two register stages:
     // one OR per cluster, then the OR of the clusters.

@@ -22,6 +22,13 @@ funnel shifts.
   python3 dm16_mandelbrot.py --center=-0.75,0.1 --width 0.5 --max-iter 400
   python3 dm16_mandelbrot.py --zoom --color      # zoom into a miniature copy of the set
   python3 dm16_mandelbrot.py --zoom --loop       # in and out until Ctrl-C
+  python3 dm16_mandelbrot.py --hdmi              # 320 x 240 on the Console's HDMI port
+  python3 dm16_mandelbrot.py --hdmi --capture    # ... checked through a capture card
+  python3 dm16_mandelbrot.py --hdmi --zoom --loop
+
+With --hdmi each finished 8 x 8 block goes straight to the frame buffer
+(FBW): a palette lookup in PE memory turns the escape count into a colour,
+and the set itself is black. Nothing is read back over the UART.
 
 A zoom stops at about 75x on an 80-column view: by then neighbouring pixels
 are 2 Q4.12 steps (2/4096) apart, and deeper would only get blockier.
@@ -30,12 +37,14 @@ import argparse
 import math
 import time
 
+import numpy as np
+
 from dm16_host import (
     DEFAULT_PORT, open_dm16, NUM_PE, COLS,
     ALU_ADD, ALU_SUB, ALU_AND, ALU_OR, ALU_XOR, ALU_MOV, ALU_MUL, ALU_MULH, ALU_SHRN, ALU_ASRN,
     SRC_R, SRC_IMM, SRC_ID, SRC_MEM, CTX_ALWAYS, CTX_IF_N, CTX_INVERT,
-    OP_LDI, OP_MAR, OP_STX, MEM_INC,
-    LOOP, ENDL, BANY, LABEL,
+    OP_LDI, OP_MAR, OP_STX, OP_LDX, MEM_INC,
+    LOOP, ENDL, BANY, LABEL, FBX, FBY, FBW, FB_W, FB_H, rgb332,
     alu, ctx, ldm, stm, put, get, encode_instr, ldi16,
     read_mem_block, upload_and_run,
 )
@@ -49,6 +58,7 @@ ROWS_PER_BLOCK = NUM_PE // COLS
 CR0, CRB, CIB, DX8, DY8 = 0x3F0, 0x3F1, 0x3F2, 0x3F3, 0x3F4
 RES = 0x000                     # one result word per block, MAR-addressed (up to 0x3EF)
 
+PAL = 0x100                     # --hdmi: 64-entry palette (RGB332), indexed by count & 63
 DONE_MARK = 0x3FF & -512        # OR-ing -512 sets bits 9..15: "this PE is done"
 ESCAPE = 257                    # escape when (x^2 + y^2) / 4 >= 257 in Q8.8, i.e. |z|^2 > ~4
 
@@ -57,12 +67,25 @@ def q(v):
     return round(v * ONE) & 0xFFFF
 
 
-def build_program(bw, bh, max_iter):
+def build_program(bw, bh, max_iter, hdmi=False):
     """Whole-image program: bh block rows x bw block columns."""
     a = lambda op, n: alu(op, SRC_R, n)                 # acc = acc OP r[n]
     i = lambda op, v: alu(op, SRC_IMM, v & 0x3FF)       # acc = acc OP imm
+    if hdmi:
+        start = [FBX(0), FBY(0)]
+        # colour = PAL[count & 63], or black inside the set (count == max_iter)
+        out = [ctx(CTX_ALWAYS), get(5), i(ALU_AND, 511), i(ALU_SUB, max_iter),
+               ctx(CTX_IF_N),
+               get(5), i(ALU_AND, 63), i(ALU_ADD, PAL),
+               encode_instr(OP_MAR), encode_instr(OP_LDX),
+               ctx(action=CTX_INVERT), encode_instr(OP_LDI),
+               ctx(CTX_ALWAYS), FBW(0)]
+    else:
+        start = [encode_instr(OP_MAR, src_sel=1, imm10=RES)]
+        out = [ctx(CTX_ALWAYS), get(5), i(ALU_AND, 511),
+               encode_instr(OP_STX, flag_ctl=MEM_INC)]
     return [
-        encode_instr(OP_MAR, src_sel=1, imm10=RES),
+        *start,
         LOOP(bh),
             ldm(CR0), stm(CRB),                         # back to the left edge
             LOOP(bw),
@@ -100,9 +123,8 @@ def build_program(bw, bh, max_iter):
                 ctx(action=CTX_INVERT),
                 BANY("iter"),
 
-                # store the count, next block to the right
-                ctx(CTX_ALWAYS), get(5), i(ALU_AND, 511),
-                encode_instr(OP_STX, flag_ctl=MEM_INC),
+                # store the count (or draw the block), next block to the right
+                *out,
                 ldm(CRB), alu(ALU_ADD, SRC_MEM, DX8), stm(CRB),
             ENDL,
             ldm(CIB), alu(ALU_ADD, SRC_MEM, DY8), stm(CIB),    # next block row
@@ -208,6 +230,75 @@ def compute(ser, view, w, h, max_iter):
     return counts, elapsed, len(prog)
 
 
+def model_image(view, w, h, max_iter):
+    """model_pixel for a whole image at once (NumPy): counts[h][w]."""
+    qx0, qy0, qdx, qdy = view
+    xs = np.arange(w)
+    ys = np.arange(h)
+    cr = ((qx0 + xs[None, :] * qdx) & 0xFFFF) * np.ones((h, 1), np.int64)
+    ci = ((qy0 - ys[:, None] * qdy) & 0xFFFF) * np.ones((1, w), np.int64)
+    s16 = lambda v: ((v & 0xFFFF) ^ 0x8000) - 0x8000
+    mulh = lambda a, b: (s16(a) * s16(b) >> 16) & 0xFFFF
+    funnel = lambda hi, lo, n: (((hi << 16) | lo) >> n) & 0xFFFF
+    x = np.zeros_like(cr)
+    y = np.zeros_like(cr)
+    cnt = np.zeros_like(cr)
+    live = np.ones(cr.shape, bool)
+    for _ in range(max_iter + 1):
+        x2h, y2h = mulh(x, x), mulh(y, y)
+        t = ((s16((x2h + y2h) & 0xFFFF) >> 2) - ESCAPE) & 0xFFFF
+        live &= (t & 0x8000) != 0
+        if not live.any():
+            break
+        xs_ = funnel(x2h, (x * x) & 0xFFFF, FRAC)
+        ys_ = funnel(y2h, (y * y) & 0xFFFF, FRAC)
+        nx = (xs_ - ys_ + cr) & 0xFFFF
+        ny = (funnel(mulh(x, y), (x * y) & 0xFFFF, FRAC - 1) + ci) & 0xFFFF
+        x = np.where(live, nx, x)
+        y = np.where(live, ny, y)
+        cnt = np.where(live, cnt + 1, cnt)
+        live &= cnt < max_iter
+    return cnt
+
+
+# 64 colours for --hdmi, cycled by escape count: dark blue -> cyan ->
+# white -> orange -> dark red -> dark blue
+_STOPS = [(0, 0, 96), (0, 160, 255), (255, 255, 255), (255, 160, 0), (128, 0, 0), (0, 0, 96)]
+
+
+def palette():
+    out = []
+    for k in range(64):
+        f = k / 64 * (len(_STOPS) - 1)
+        j, t = int(f), f - int(f)
+        c = [round(a + (b - a) * t) for a, b in zip(_STOPS[j], _STOPS[j + 1])]
+        out.append(rgb332(*c) or 1)        # 0 is reserved for the set itself
+    return out
+
+
+def palette_program():
+    prog = [ctx(CTX_ALWAYS)]
+    for k, c in enumerate(palette()):
+        prog += [*ldi16(c), stm(PAL + k)]
+    return prog
+
+
+def expected_screen(view, max_iter):
+    """The RGB332 frame buffer an --hdmi run should leave."""
+    counts = model_image(view, FB_W, FB_H, max_iter)
+    pal = np.array(palette())
+    return np.where(counts >= max_iter, 0, pal[counts & 63])
+
+
+def compute_hdmi(ser, view, max_iter, with_palette=True):
+    bw, bh = FB_W // BLOCK, FB_H // ROWS_PER_BLOCK
+    prog = (palette_program() if with_palette else []) + setup_program(view) + \
+        build_program(bw, bh, max_iter, hdmi=True)
+    t0 = time.monotonic()
+    upload_and_run(ser, prog, timeout=120)
+    return time.monotonic() - t0, len(prog)
+
+
 def check(counts, view, max_iter):
     qx0, qy0, qdx, qdy = view
     bad = 0
@@ -244,7 +335,14 @@ def main():
     ap.add_argument("--zoom", action="store_true", help="animate a zoom into --center")
     ap.add_argument("--zoom-factor", type=float, default=0.93, help="width multiplier per frame")
     ap.add_argument("--loop", action="store_true", help="zoom in and back out until Ctrl-C")
+    ap.add_argument("--hdmi", action="store_true", help="draw 320 x 240 on the HDMI output")
+    ap.add_argument("--capture", action="store_true",
+                    help="with --hdmi: check the screen through an HDMI capture card")
+    ap.add_argument("--png", help="with --capture: save the capture here")
     args = ap.parse_args()
+
+    if args.hdmi:
+        return main_hdmi(args)
 
     w, h = (int(v) for v in args.size.lower().split("x"))
     if w % BLOCK or h % ROWS_PER_BLOCK:
@@ -301,6 +399,54 @@ def main():
             pass
         finally:
             print("\x1b[?25h", end="")
+    return 1 if bad else 0
+
+
+def main_hdmi(args):
+    import dm16_hdmi
+    cx, cy = (float(v) for v in (args.center or (MINIBROT if args.zoom else "-0.65,0")).split(","))
+    if not 1 <= args.max_iter <= 511:
+        raise SystemExit("--max-iter must be 1..511")
+    device = None
+    if args.capture:
+        device = dm16_hdmi.find_capture_device()
+        if not device:
+            raise SystemExit("no capture device found")
+    widths, width = [], args.width
+    while make_view(cx, cy, width, FB_W, FB_H, 1.0) and width / FB_W * ONE >= 2:
+        widths.append(width)
+        if not args.zoom:
+            break
+        width *= args.zoom_factor
+    if not widths:
+        raise SystemExit("view out of Q4.12 range or too small to resolve")
+    sequence = widths + (widths[-2:0:-1] if args.loop else [])
+    bad = frames = 0
+    t_start = time.monotonic()
+    with open_dm16(args.port) as ser:
+        cfg = dm16_hdmi.read_config(ser)
+        if not cfg or not cfg.get("has_hdmi"):
+            raise SystemExit("this bitstream has no HDMI output")
+        first = True
+        try:
+            while True:
+                for width in sequence:
+                    depth = math.log2(args.width / width)
+                    max_iter = min(511, round(args.max_iter * (1 + depth / 3)))
+                    view = make_view(cx, cy, width, FB_W, FB_H, 1.0)
+                    elapsed, n = compute_hdmi(ser, view, max_iter, with_palette=first)
+                    first = False
+                    frames += 1
+                    print(f"zoom {args.width / width:5.1f}x  {max_iter} iterations max  "
+                          f"{n} instructions  {elapsed * 1000:5.0f} ms  "
+                          f"({frames / (time.monotonic() - t_start):.1f} fps)", flush=True)
+                    if device and not dm16_hdmi.check_screen(
+                            device, expected_screen(view, max_iter), args.png):
+                        bad += 1
+                if not args.loop:
+                    break
+        except KeyboardInterrupt:
+            pass
     return 1 if bad else 0
 
 
