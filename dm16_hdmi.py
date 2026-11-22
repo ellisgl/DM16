@@ -1,9 +1,10 @@
 """
 DM16 HDMI output: test pattern, and checking the screen with a capture card.
 
-HDMI builds have a 320x240 frame buffer, shown at 640x480 60 Hz: 256 colours
-(RGB332) on the Tang Console 138K, 16 (the CGA palette, the low 4 bits of
-each byte) on the Tang Nano 20K. The configuration readback says which. Programs write it with FBX / FBY / FBW (see dm16_host.py):
+HDMI builds have a frame buffer shown at 640x480 60 Hz: 320x240 in 256
+colours (RGB332) on the Tang Console 138K, 320x240 in 16 (the CGA palette,
+the low 4 bits of each byte) on the Tang Nano 20K, and 160x120 in 16 on the
+Tang Nano 9K. The configuration readback says which. Programs write it with FBX / FBY / FBW (see dm16_host.py):
 FBW copies the low byte of every PE's ACC to the frame buffer at once.
 
   python3 dm16_hdmi.py                      # draw the test pattern
@@ -31,11 +32,21 @@ import numpy as np
 from dm16_host import (
     DEFAULT_PORT, open_dm16, read_config, NUM_PE, COLS,
     ALU_ADD, ALU_MUL, ALU_MOV, SRC_IMM, SRC_ID, SRC_R, CTX_ALWAYS,
-    LOOP, ENDL, FBX, FBY, FBW, FB_W, FB_H,
+    LOOP, ENDL, FBX, FBY, FBW,
     alu, ctx, put, get, encode_instr, OP_LDI, upload_and_run,
 )
 
 ROWS = NUM_PE // COLS
+FB_W, FB_H = 320, 240           # set from the board by configure()
+
+
+def configure(cfg):
+    """Take the frame-buffer size from the board's configuration; returns the
+    number of colours (0 if the bitstream has no HDMI)."""
+    global FB_W, FB_H
+    if cfg and cfg.get("has_hdmi"):
+        FB_W, FB_H = cfg.get("fb_size", (320, 240))
+    return screen_colors(cfg)
 CAPTURE_NAMES = ("capture", "hdmi", "xr1", "cam link", "usb video")
 
 
@@ -121,8 +132,10 @@ def load_cal(ncol=256):
 
 
 def blocks_of(shot):
-    """The capture averaged over each 2x2 block: (240, 320, 3) floats."""
-    return shot.reshape(FB_H, 2, FB_W, 2, 3).astype(np.float64).mean(axis=(1, 3))
+    """The capture averaged over each frame-buffer pixel's block (2x2, or
+    4x4 at 160x120): (FB_H, FB_W, 3) floats."""
+    s = 640 // FB_W
+    return shot.reshape(FB_H, s, FB_W, s, 3).astype(np.float64).mean(axis=(1, 3))
 
 
 def classify(blocks, table):
@@ -247,12 +260,12 @@ def main():
         return 0
 
     with open_dm16(args.port) as ser:
-        ncol = screen_colors(read_config(ser))
+        ncol = configure(read_config(ser))
         if not ncol:
             print("this bitstream has no HDMI output", file=sys.stderr)
             return 1
         upload_and_run(ser, pattern_program(), timeout=30)
-        print(f"test pattern drawn ({ncol} colours)")
+        print(f"test pattern drawn ({FB_W}x{FB_H}, {ncol} colours)")
     if args.capture:
         if not device:
             ap.error("no capture device found (use --video)")

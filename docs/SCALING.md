@@ -19,8 +19,9 @@ already a parameter, what it costs, and what would have to change.
 | `GOWIN_SP` | `dm16_core` | 1 | PE memories from Gowin `SP` block RAMs (1) or inferred RAM (0, for any other FPGA) |
 | `HAS_RF` | `dm16_pe` | 1 | registers `r1` and up; without them every `r[n]` is `b` |
 | `HAS_FPU` | `dm16_core` | 1 (0 on the Nano 9K) | bf16 FPU in every PE; without it FPU instructions are no-ops |
-| `HAS_HDMI` | board top, `dm16_core` | 1 (0 on the Nano 9K) | 320×240 frame buffer on HDMI and the `FBX`/`FBY`/`FBW` ops; without it they are no-ops |
-| `PIX_BITS` / `FB_BITS` | `dm16_hdmi` / `dm16_core` | 8 (4 on the Nano 20K) | frame-buffer bits per pixel: 8 = RGB332 (38 block RAMs), 4 = 16 CGA colours (19) |
+| `HAS_HDMI` | board top, `dm16_core` | 1 | 320×240 frame buffer on HDMI and the `FBX`/`FBY`/`FBW` ops; without it they are no-ops |
+| `PIX_BITS` / `FB_BITS` | `dm16_hdmi` / `dm16_core` | 8 (4 on the Nano 20K) | frame-buffer bits per pixel: 8 = RGB332 (38 block RAMs at 320×240), 4 = 16 CGA colours (19) |
+| `FB_W`, `FB_H` / `SCALE` | `dm16_core` / `dm16_hdmi` | 320×240 / 2 (160×120 / 4 on the Nano 9K) | frame-buffer size; `SCALE` = 640 / `FB_W` |
 
 PEs = 2^`DIMS` × `LANES`. The Tang build sets all of these in `dm16_top.v`.
 The host library has matching constants (`DIMS`, `LANES`, `COLS`,
