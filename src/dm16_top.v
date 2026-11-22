@@ -25,10 +25,10 @@ module dm16_top (
     wire [3:0] quarter_active;
 
     dm16_core #(
-        .DIMS   (4),
-        .LANES  (4),
-        .COLS   (8),
-        .CLK_HZ (CLK_HZ),
+        .DIMS    (4),
+        .LANES   (4),
+        .COLS    (8),
+        .CLK_HZ  (CLK_HZ),
         .W       (16),        // PE width; keep in sync with WORD_BITS in dm16_host.py
         .NREGS   (8),         // registers r0..r7; keep in sync with NUM_REGS
         .RF_BRAM (1'b0),      // registers in flip-flops

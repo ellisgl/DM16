@@ -10,32 +10,29 @@
 // (dimension-ordered, lowest differing dimension first), which is
 // deadlock-free on a hypercube.
 module hypercube_router #(
-    parameter integer DIMS     = 3,
+    parameter integer DIMS       = 3,
     parameter [DIMS-1:0] MY_NODE = 0,
-    parameter integer PKT_W    = 24,
-    parameter integer LINK_W   = 4,
-    parameter integer NODE_LSB = 17
+    parameter integer PKT_W      = 24,
+    parameter integer LINK_W     = 4,
+    parameter integer NODE_LSB   = 17
 )(
     input  wire              clk,
     input  wire              rst_n,
 
     // Local cluster injection / ejection
-    input  wire [PKT_W-1:0]  local_in_pkt,
-    input  wire              local_in_valid,
-    output wire              local_in_ready,
-
-    output reg  [PKT_W-1:0]  local_out_pkt,
-    output reg               local_out_valid,
-    input  wire              local_out_ready,
-
+    input  wire [PKT_W-1:0]      local_in_pkt,
+    input  wire                  local_in_valid,
+    output wire                  local_in_ready,
+    output reg  [PKT_W-1:0]      local_out_pkt,
+    output reg                   local_out_valid,
+    input  wire                  local_out_ready,
     // DIMS hypercube links (LINK_W bits each, packed)
     output reg  [LINK_W*DIMS-1:0] dim_tx_data,
-    output reg  [DIMS-1:0]   dim_tx_valid,
-    input  wire [DIMS-1:0]   dim_tx_ready,
-
+    output reg  [DIMS-1:0]        dim_tx_valid,
+    input  wire [DIMS-1:0]        dim_tx_ready,
     input  wire [LINK_W*DIMS-1:0] dim_rx_data,
-    input  wire [DIMS-1:0]   dim_rx_valid,
-    output wire [DIMS-1:0]   dim_rx_ready
+    input  wire [DIMS-1:0]        dim_rx_valid,
+    output wire [DIMS-1:0]        dim_rx_ready
 );
 
     localparam integer NSRC  = DIMS + 1;   // DIMS link inputs + local
@@ -84,20 +81,22 @@ module hypercube_router #(
     // ---------------------------------------------------------
     // 2. Round-robin arbiter over NSRC sources
     // ---------------------------------------------------------
-    wire [NSRC-1:0] src_valid = {local_in_valid, rx_buf_vld};
-
-    reg [3:0] rr_ptr;
-    reg [3:0] sel_src;
-    reg       sel_found;
-
     integer k;
-    reg [4:0] idx;
+    wire [NSRC-1:0] src_valid = {local_in_valid, rx_buf_vld};
+    reg [3:0]        rr_ptr;
+    reg [3:0]        sel_src;
+    reg              sel_found;
+    reg [4:0]        idx;
+    
     always @(*) begin
         sel_found = 1'b0;
         sel_src   = 4'd0;
         for (k = 0; k < NSRC; k = k + 1) begin
             idx = {1'b0, rr_ptr} + k[4:0];
-            if (idx >= NSRC) idx = idx - NSRC;
+            if (idx >= NSRC) begin
+                idx = idx - NSRC;
+            end
+
             if (!sel_found && src_valid[idx]) begin
                 sel_found = 1'b1;
                 sel_src   = idx[3:0];
@@ -108,8 +107,11 @@ module hypercube_router #(
     reg [PKT_W-1:0] active_pkt;
     always @(*) begin
         active_pkt = local_in_pkt;
-        for (k = 0; k < DIMS; k = k + 1)
-            if (sel_src == k[3:0]) active_pkt = rx_buf[k];
+        for (k = 0; k < DIMS; k = k + 1) begin
+            if (sel_src == k[3:0]) begin
+                active_pkt = rx_buf[k];
+            end
+        end
     end
 
     // ---------------------------------------------------------

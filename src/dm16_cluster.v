@@ -19,29 +19,29 @@ module dm16_cluster #(
     parameter         HAS_FPU  = 1'b1,   // bf16 lanes in every PE
     parameter integer PKT_W    = W + 8   // derived: do not override
 )(
-    input  wire                 clk,
-    input  wire                 rst_n,
-    input  wire [23:0]          instr,
-    input  wire                 instr_valid,
+    input  wire               clk,
+    input  wire               rst_n,
+    input  wire [23:0]        instr,
+    input  wire               instr_valid,
 
     // NEWS grid (LANES PEs x W bits)
-    input  wire [LANES*W-1:0]   news_n_in,
-    input  wire [LANES*W-1:0]   news_e_in,
-    input  wire [LANES*W-1:0]   news_w_in,
-    input  wire [LANES*W-1:0]   news_s_in,
-    output wire [LANES*W-1:0]   news_out,
+    input  wire [LANES*W-1:0] news_n_in,
+    input  wire [LANES*W-1:0] news_e_in,
+    input  wire [LANES*W-1:0] news_w_in,
+    input  wire [LANES*W-1:0] news_s_in,
+    output wire [LANES*W-1:0] news_out,
 
     // Router local port
-    output reg  [PKT_W-1:0]     rt_in_pkt,
-    output wire                 rt_in_valid,
-    input  wire                 rt_in_ready,
-    input  wire [PKT_W-1:0]     rt_out_pkt,
-    input  wire                 rt_out_valid,
-    output wire                 rt_out_ready,
+    output reg  [PKT_W-1:0]   rt_in_pkt,
+    output wire               rt_in_valid,
+    input  wire               rt_in_ready,
+    input  wire [PKT_W-1:0]   rt_out_pkt,
+    input  wire               rt_out_valid,
+    output wire               rt_out_ready,
 
     // Status & host readback
-    output wire [LANES-1:0]     ctx_active,
-    output wire [LANES*W-1:0]   acc_out
+    output wire [LANES-1:0]   ctx_active,
+    output wire [LANES*W-1:0] acc_out
 );
 
     localparam integer LANE_BITS = (LANES <= 2) ? 1 : 2;
@@ -79,26 +79,29 @@ module dm16_cluster #(
     end
 
     wire [PKT_W*LANES-1:0] tx_pkt;
-    wire [LANES-1:0]    tx_valid;
-    reg  [LANES-1:0]    tx_ready;
-    wire [LANES-1:0]    rx_pop;
+    wire [LANES-1:0]       tx_valid;
+    reg  [LANES-1:0]       tx_ready;
+    wire [LANES-1:0]       rx_pop;
 
     // Receive mailboxes
-    reg  [W-1:0]        mbox [0:LANES-1];
-    reg  [LANES-1:0]    mbox_full;
+    reg  [W-1:0]           mbox [0:LANES-1];
+    reg  [LANES-1:0]       mbox_full;
 
-    wire [LANE_BITS-1:0] out_lane = rt_out_pkt[W +: LANE_BITS];
+    wire [LANE_BITS-1:0]   out_lane = rt_out_pkt[W +: LANE_BITS];
+    
     assign rt_out_ready = !mbox_full[out_lane];
 
     integer k;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             mbox_full <= {LANES{1'b0}};
-            for (k = 0; k < LANES; k = k + 1)
+            for (k = 0; k < LANES; k = k + 1) begin
                 mbox[k] <= {W{1'b0}};
+            end
         end else begin
-            for (k = 0; k < LANES; k = k + 1)
+            for (k = 0; k < LANES; k = k + 1) begin
                 if (rx_pop[k]) mbox_full[k] <= 1'b0;
+            end
             if (rt_out_valid && rt_out_ready) begin
                 mbox[out_lane]      <= rt_out_pkt[W-1:0];
                 mbox_full[out_lane] <= 1'b1;
@@ -127,10 +130,14 @@ module dm16_cluster #(
     always @(*) begin
         pick_pkt = tx_pkt[PKT_W-1:0];
         tx_ready = {LANES{1'b0}};
-        for (k = LANES - 1; k >= 0; k = k - 1)
-            if (tx_valid[k]) pick_pkt = tx_pkt[k*PKT_W +: PKT_W];
-        for (k = 0; k < LANES; k = k + 1)
+        for (k = LANES - 1; k >= 0; k = k - 1) begin
+            if (tx_valid[k]) begin
+                pick_pkt = tx_pkt[k*PKT_W +: PKT_W];
+            end
+        end
+        for (k = 0; k < LANES; k = k + 1) begin
             tx_ready[k] = !inj_valid && ((tx_valid & ((1 << k) - 1)) == 0);
+        end
     end
 
     always @(posedge clk or negedge rst_n) begin
@@ -138,8 +145,9 @@ module dm16_cluster #(
             inj_valid <= 1'b0;
             inj_pkt   <= {PKT_W{1'b0}};
         end else if (inj_valid) begin
-            if (rt_in_ready)
+            if (rt_in_ready) begin
                 inj_valid <= 1'b0;          // the router took it
+            end
         end else if (|tx_valid) begin
             inj_valid <= 1'b1;              // take the highest-priority PE's packet
             inj_pkt   <= pick_pkt;
@@ -147,9 +155,9 @@ module dm16_cluster #(
     end
 
     wire [MEM_AW*LANES-1:0] mem_addr;
-    wire [W*LANES-1:0]  mem_wdata;
-    wire [LANES-1:0]    mem_we;
-    wire [W*LANES-1:0]  mem_rdata;
+    wire [W*LANES-1:0]      mem_wdata;
+    wire [LANES-1:0]        mem_we;
+    wire [W*LANES-1:0]      mem_rdata;
 
     genvar i, j, k2;
     generate
@@ -245,8 +253,9 @@ module dm16_cluster #(
                 reg [W-1:0] ram [0:(1 << MEM_AW) - 1];
                 reg [W-1:0] rd_q;
                 always @(posedge clk) begin
-                    if (mem_we[i])
+                    if (mem_we[i]) begin
                         ram[mem_addr[i*MEM_AW +: MEM_AW]] <= mem_wdata[i*W +: W];
+                    end
                     rd_q <= ram[mem_addr[i*MEM_AW +: MEM_AW]];
                 end
                 assign mem_rdata[i*W +: W] = rd_q;

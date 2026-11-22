@@ -20,10 +20,13 @@ module dm16_top_nano9k (
     // bitstream or power-cycle the board.
     reg [3:0] por = 4'd0;
     always @(posedge clk)
-        if (por != 4'hF) por <= por + 4'd1;
-    wire rst_n = (por == 4'hF);
+        if (por != 4'hF) begin
+            por <= por + 4'd1;
+        end
 
-    wire       running, all_active;
+    wire       rst_n = (por == 4'hF);
+    wire       running;
+    wire       all_active;
     wire [3:0] quarter_active;
 
     dm16_core #(

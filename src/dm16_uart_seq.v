@@ -1,10 +1,10 @@
 `timescale 1ns/1ns
 
 module dm16_uart_seq #(
-    parameter integer CLK_HZ = 54_000_000,
-    parameter integer BAUD   = 115_200,
-    parameter integer NUM_PE = 8,
-    parameter integer W      = 16,     // PE data width (ACC dumps send W/8 bytes per PE)
+    parameter integer CLK_HZ  = 54_000_000,
+    parameter integer BAUD    = 115_200,
+    parameter integer NUM_PE  = 8,
+    parameter integer W       = 16,     // PE data width (ACC dumps send W/8 bytes per PE)
     // The rest only describe the array, for the configuration readback (0x0B)
     parameter integer DIMS    = 4,
     parameter integer LANES   = 4,
@@ -14,20 +14,20 @@ module dm16_uart_seq #(
     parameter         HAS_FPU = 1'b1,
     parameter         RF_BRAM = 1'b0
 )(
-    input  wire         clk,
-    input  wire         rst_n,
-    input  wire         uart_rx,
-    output reg          uart_tx,
+    input  wire                clk,
+    input  wire                rst_n,
+    input  wire                uart_rx,
+    output reg                 uart_tx,
 
     // Sequencer broadcast to 64-PE array
-    output reg  [23:0]  current_instr,
-    output reg          instr_valid,
-    output reg          running,
+    output reg  [23:0]         current_instr,
+    output reg                 instr_valid,
+    output reg                 running,
 
     // Live status from 64-PE array
     input  wire [NUM_PE-1:0]   all_ctx,
-    input  wire [NUM_PE*W-1:0]  all_acc,
-    input  wire                 any_active   // registered global OR of all_ctx
+    input  wire [NUM_PE*W-1:0] all_acc,
+    input  wire                any_active   // registered global OR of all_ctx
 );
 
     // =========================================================================
@@ -70,19 +70,30 @@ module dm16_uart_seq #(
                         rx_clk_cnt <= 0;
                         rx_bit_idx <= 0;
                         rx_state   <= 2;
-                    end else rx_state <= 0;
-                end else rx_clk_cnt <= rx_clk_cnt + 10'd1;
+                    end else begin
+                        rx_state <= 0;
+                    end
+                end else begin
+                    rx_clk_cnt <= rx_clk_cnt + 10'd1;
+                end
                 2: if (rx_clk_cnt == clks_per_bit - 10'd1) begin
                     rx_clk_cnt           <= 0;
                     rx_shift[rx_bit_idx] <= rx_sync2;
-                    if (rx_bit_idx == 7) rx_state <= 3;
-                    else rx_bit_idx <= rx_bit_idx + 3'd1;
-                end else rx_clk_cnt <= rx_clk_cnt + 10'd1;
+                    if (rx_bit_idx == 7) begin
+                        rx_state <= 3;
+                    end else begin 
+                        rx_bit_idx <= rx_bit_idx + 3'd1;
+                    end
+                end else begin
+                    rx_clk_cnt <= rx_clk_cnt + 10'd1;
+                end
                 3: if (rx_clk_cnt == clks_per_bit - 10'd1) begin
                     rx_byte  <= rx_shift;
                     rx_valid <= 1;
                     rx_state <= 0;
-                end else rx_clk_cnt <= rx_clk_cnt + 10'd1;
+                end else begin
+                    rx_clk_cnt <= rx_clk_cnt + 10'd1;
+                end
             endcase
         end
     end
@@ -118,22 +129,32 @@ module dm16_uart_seq #(
                     if (tx_clk_cnt == clks_per_bit - 10'd1) begin
                         tx_clk_cnt <= 0;
                         tx_state   <= 2;
-                    end else tx_clk_cnt <= tx_clk_cnt + 10'd1;
+                    end else begin
+                        tx_clk_cnt <= tx_clk_cnt + 10'd1;
+                    end
                 end
                 2: begin
                     uart_tx <= tx_shift[tx_bit_idx];
                     if (tx_clk_cnt == clks_per_bit - 10'd1) begin
                         tx_clk_cnt <= 0;
-                        if (tx_bit_idx == 7) tx_state <= 3;
-                        else tx_bit_idx <= tx_bit_idx + 3'd1;
-                    end else tx_clk_cnt <= tx_clk_cnt + 10'd1;
+                        if (tx_bit_idx == 7) begin
+                            tx_state <= 3;
+                        end
+                        else begin
+                            tx_bit_idx <= tx_bit_idx + 3'd1;
+                        end
+                    end else begin
+                        tx_clk_cnt <= tx_clk_cnt + 10'd1;
+                    end
                 end
                 3: begin
                     uart_tx <= 1;
                     if (tx_clk_cnt == clks_per_bit - 10'd1) begin
                         tx_busy  <= 0;
                         tx_state <= 0;
-                    end else tx_clk_cnt <= tx_clk_cnt + 10'd1;
+                    end else begin
+                        tx_clk_cnt <= tx_clk_cnt + 10'd1;
+                    end
                 end
             endcase
         end
@@ -168,10 +189,10 @@ module dm16_uart_seq #(
     reg [23:0]     imem [0:(1 << PC_W) - 1];
     reg [PC_W-1:0] pc;
     reg [PC_W-1:0] end_pc;
-    reg        single_step;
-    reg [4:0]  cmd_state;
+    reg            single_step;
+    reg [4:0]      cmd_state;
     reg [PC_W-1:0] wr_addr;
-    reg [23:0] wr_data;
+    reg [23:0]     wr_data;
     localparam integer ACC_BYTES = NUM_PE * W / 8;
     localparam integer CTX_BYTES = (NUM_PE + 7) / 8;
     // Zero-padded to whole bytes. The "+ 1" keeps the replication count
@@ -185,9 +206,12 @@ module dm16_uart_seq #(
         integer t;
         begin
             log2i = 0;
-            for (t = v; t > 1; t = t >> 1) log2i = log2i + 1;
+            for (t = v; t > 1; t = t >> 1) begin
+                log2i = log2i + 1;
+            end
         end
     endfunction
+
     localparam [23:0] CFG_KHZ   = CLK_HZ / 1000;
     localparam [7:0]  CFG_W     = W;
     localparam [7:0]  CFG_DIMS  = DIMS;
@@ -231,44 +255,48 @@ module dm16_uart_seq #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            cmd_state   <= 0;
-            running     <= 0;
-            single_step <= 0;
-            end_pc      <= 0;
-            dump_idx    <= 0;
-            tx_start    <= 0;
-            tx_data_in  <= 0;
-            inj_instr   <= 0;
-            inj_valid   <= 0;
+            cmd_state    <= 0;
+            running      <= 0;
+            single_step  <= 0;
+            end_pc       <= 0;
+            dump_idx     <= 0;
+            tx_start     <= 0;
+            tx_data_in   <= 0;
+            inj_instr    <= 0;
+            inj_valid    <= 0;
             clks_per_bit <= CLKS_PER_BIT;
-            cmd_idle    <= 0;
-            br_addr     <= 0;
-            br_left     <= 0;
-            br_phase    <= 0;
-            br_mar      <= 0;
-            br_wait     <= 0;
+            cmd_idle     <= 0;
+            br_addr      <= 0;
+            br_left      <= 0;
+            br_phase     <= 0;
+            br_mar       <= 0;
+            br_wait      <= 0;
         end else begin
             single_step <= 0;
             tx_start    <= 0;
             inj_valid   <= 0;
 
-            if (rx_valid || !cmd_in_args)
+            if (rx_valid || !cmd_in_args) begin
                 cmd_idle <= 0;
-            else if (cmd_idle == {17{1'b1}})
+            end else if (cmd_idle == {17{1'b1}}) begin
                 cmd_state <= 4'd0;
-            else
+            end else begin
                 cmd_idle <= cmd_idle + 17'd1;
+            end
 
-            if (running && (pc == end_pc))
+            if (running && (pc == end_pc)) begin
                 running <= 0;
-
+            end
+        
             // State 10: Stream the CTX mask (CTX_BYTES bytes, zero-padded)
             if (cmd_state == 4'd10 && !tx_busy && !tx_start) begin
                 if (dump_idx < CTX_BYTES) begin
                     tx_data_in <= ctx_padded[dump_idx*8 +: 8];
                     tx_start   <= 1'b1;
                     dump_idx   <= dump_idx + 16'd1;
-                end else cmd_state <= 4'd0;
+                end else begin
+                    cmd_state <= 4'd0;
+                end
             end
 
             // State 23: Stream the configuration (12 bytes)
@@ -277,7 +305,9 @@ module dm16_uart_seq #(
                     tx_data_in <= CFG_BYTES[dump_idx*8 +: 8];
                     tx_start   <= 1'b1;
                     dump_idx   <= dump_idx + 16'd1;
-                end else cmd_state <= 4'd0;
+                end else begin
+                    cmd_state <= 4'd0;
+                end
             end
 
             // State 15: Send the status byte
@@ -293,7 +323,9 @@ module dm16_uart_seq #(
                     tx_data_in <= all_acc[dump_idx*8 +: 8];
                     tx_start   <= 1'b1;
                     dump_idx   <= dump_idx + 16'd1;
-                end else cmd_state <= 4'd0;
+                end else begin
+                    cmd_state <= 4'd0;
+                end
             end
 
             // States 20-22: bulk read. Inject one instruction (see the phases
@@ -340,39 +372,76 @@ module dm16_uart_seq #(
             if (rx_valid) begin
                 case (cmd_state)
                     4'd0: case (rx_byte)
-                        8'h01: cmd_state   <= 4'd1; // WRITE_IMEM
-                        8'h02: cmd_state   <= 4'd6; // RUN
-                        8'h03: single_step <= 1'b1; // STEP
-                        8'h04: running     <= 1'b0; // HALT/RESET
-                        8'h05: begin dump_idx <= 16'd0; cmd_state <= 4'd10; end // READ_CTX
-                        8'h06: cmd_state   <= 4'd8; // INJECT_INSTR (3 bytes)
-                        8'h07: begin dump_idx <= 16'd0; cmd_state <= 4'd11; end // READ_ACC_GRID
-                        8'h08: cmd_state   <= 4'd13; // SET_BAUD (2 bytes: clocks per bit, big-endian)
-                        8'h09: cmd_state   <= 4'd15; // READ_STATUS
-                        8'h0A: cmd_state   <= 5'd16; // BULK_READ (4 bytes)
-                        8'h0B: begin dump_idx <= 16'd0; cmd_state <= 5'd23; end // READ_CONFIG
+                        8'h01: cmd_state      <= 4'd1; // WRITE_IMEM
+                        8'h02: cmd_state      <= 4'd6; // RUN
+                        8'h03: single_step    <= 1'b1; // STEP
+                        8'h04: running        <= 1'b0; // HALT/RESET
+                        8'h05: begin 
+                            // READ_CTX
+                            dump_idx <= 16'd0;
+                            cmd_state <= 4'd10;
+                        end 
+                        8'h06: cmd_state      <= 4'd8; // INJECT_INSTR (3 bytes)
+                        8'h07: begin
+                            // READ_ACC_GRID
+                            dump_idx  <= 16'd0;
+                            cmd_state <= 4'd11;
+                        end
+                        8'h08: cmd_state      <= 4'd13; // SET_BAUD (2 bytes: clocks per bit, big-endian)
+                        8'h09: cmd_state      <= 4'd15; // READ_STATUS
+                        8'h0A: cmd_state      <= 5'd16; // BULK_READ (4 bytes)
+                        8'h0B: begin
+                            // READ_CONFIG
+                            dump_idx  <= 16'd0;
+                            cmd_state <= 5'd23;
+                        end
                     endcase
-                    4'd1: begin wr_addr[11:8]  <= rx_byte[3:0]; cmd_state <= 4'd2; end
-                    4'd2: begin wr_addr[7:0]   <= rx_byte;      cmd_state <= 4'd3; end
-                    4'd3: begin wr_data[23:16] <= rx_byte;      cmd_state <= 4'd4; end
-                    4'd4: begin wr_data[15:8]  <= rx_byte;      cmd_state <= 4'd5; end
+                    4'd1: begin
+                        wr_addr[11:8] <= rx_byte[3:0];
+                        cmd_state     <= 4'd2;
+                    end
+                    4'd2: begin
+                        wr_addr[7:0] <= rx_byte;
+                        cmd_state    <= 4'd3;
+                    end
+                    4'd3: begin
+                        wr_data[23:16] <= rx_byte;
+                        cmd_state <= 4'd4;
+                    end
+                    4'd4: begin
+                        wr_data[15:8] <= rx_byte;
+                        cmd_state     <= 4'd5;
+                    end
                     4'd5: begin
                         imem[wr_addr] <= (wr_data & 24'hFFFF00) | rx_byte;
                         cmd_state     <= 4'd0;
                     end
-                    4'd6: begin end_pc[11:8] <= rx_byte[3:0]; cmd_state <= 4'd7; end
+                    4'd6: begin
+                        end_pc[11:8] <= rx_byte[3:0];
+                        cmd_state    <= 4'd7;
+                    end
                     4'd7: begin
                         end_pc[7:0] <= rx_byte;
                         running     <= 1'b1;
                         cmd_state   <= 4'd0;
                     end
-                    4'd8: begin wr_data[23:16] <= rx_byte; cmd_state <= 4'd9; end
-                    4'd9: begin wr_data[15:8]  <= rx_byte; cmd_state <= 4'd12; end
-                    4'd13: begin wr_data[15:8] <= rx_byte; cmd_state <= 4'd14; end
+                    4'd8: begin
+                        wr_data[23:16] <= rx_byte;
+                        cmd_state <= 4'd9;
+                    end
+                    4'd9: begin 
+                        wr_data[15:8]  <= rx_byte;
+                        cmd_state <= 4'd12;
+                    end
+                    4'd13: begin
+                        wr_data[15:8] <= rx_byte;
+                        cmd_state <= 4'd14;
+                    end
                     4'd14: begin
                         // Takes effect from the next byte; values below 8 are ignored
-                        if ({wr_data[9:8], rx_byte} >= 10'd8)
+                        if ({wr_data[9:8], rx_byte} >= 10'd8) begin
                             clks_per_bit <= {wr_data[9:8], rx_byte};
+                        end
                         cmd_state <= 4'd0;
                     end
                     4'd12: begin
@@ -380,9 +449,18 @@ module dm16_uart_seq #(
                         inj_valid <= 1'b1;
                         cmd_state <= 4'd0;
                     end
-                    5'd16: begin br_addr[15:8] <= rx_byte; cmd_state <= 5'd17; end
-                    5'd17: begin br_addr[7:0]  <= rx_byte; cmd_state <= 5'd18; end
-                    5'd18: begin br_left[15:8] <= rx_byte; cmd_state <= 5'd19; end
+                    5'd16: begin
+                        br_addr[15:8] <= rx_byte;
+                        cmd_state     <= 5'd17;
+                    end
+                    5'd17: begin
+                        br_addr[7:0]  <= rx_byte;
+                        cmd_state <= 5'd18;
+                    end
+                    5'd18: begin
+                        br_left[15:8] <= rx_byte;
+                        cmd_state <= 5'd19;
+                    end
                     5'd19: begin
                         br_left[7:0] <= rx_byte;
                         br_phase     <= 3'd0;
@@ -527,7 +605,9 @@ module dm16_uart_seq #(
                                 lp_cnt[lp_top] <= lp_cnt[lp_top] - 16'd1;
                                 pc             <= lp_start[lp_top];
                             end else begin
-                                if (lp_sp != 3'd0) lp_sp <= lp_sp - 3'd1;
+                                if (lp_sp != 3'd0) begin
+                                    lp_sp <= lp_sp - 3'd1;
+                                end
                                 pc <= pc + 1'b1;
                             end
                         end
@@ -542,10 +622,11 @@ module dm16_uart_seq #(
                                 imem_wait <= 1'b0;
                             end else begin
                                 gor_armed <= 1'b0;
-                                if ((ctl_op == C_BANY) ? any_active : !any_active)
+                                if ((ctl_op == C_BANY) ? any_active : !any_active) begin
                                     pc <= ctl_tgt;
-                                else
+                                end else begin
                                     pc <= pc + 1'b1;
+                                end
                             end
                         end
                         C_HALT: pc <= end_pc;   // the loader stops when pc == end_pc

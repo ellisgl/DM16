@@ -51,20 +51,20 @@ module dm16_bf16 (
     // Stage A (combinational from s0): unpack, specials, align / multiply
     // Frame: value = sig * 2^-16 * 2^(e - 127)
     // ------------------------------------------------------------------
-    wire       sa = s0_a[15];
-    wire       sb = s0_b[15] ^ (s0_op == 2'd1);     // subtract = add negated b
-    wire [7:0] ea = s0_a[14:7];
-    wire [7:0] eb = s0_b[14:7];
-    wire [6:0] fa = s0_a[6:0];
-    wire [6:0] fb = s0_b[6:0];
+    wire       sa       = s0_a[15];
+    wire       sb       = s0_b[15] ^ (s0_op == 2'd1);     // subtract = add negated b
+    wire [7:0] ea       = s0_a[14:7];
+    wire [7:0] eb       = s0_b[14:7];
+    wire [6:0] fa       = s0_a[6:0];
+    wire [6:0] fb       = s0_b[6:0];
 
-    wire a_zero = (ea == 8'd0);                     // includes FTZ'd subnormals
-    wire b_zero = (eb == 8'd0);
-    wire a_inf  = (ea == 8'hFF) && (fa == 7'd0);
-    wire b_inf  = (eb == 8'hFF) && (fb == 7'd0);
-    wire a_nan  = (ea == 8'hFF) && (fa != 7'd0);
-    wire b_nan  = (eb == 8'hFF) && (fb != 7'd0);
-
+    wire a_zero         = (ea == 8'd0);                     // includes FTZ'd subnormals
+    wire b_zero         = (eb == 8'd0);
+    wire a_inf          = (ea == 8'hFF) && (fa == 7'd0);
+    wire b_inf          = (eb == 8'hFF) && (fb == 7'd0);
+    wire a_nan          = (ea == 8'hFF) && (fa != 7'd0);
+    wire b_nan          = (eb == 8'hFF) && (fb != 7'd0);
+      
     // add/sub: order by magnitude
     wire        a_big   = ({ea, fa} >= {eb, fb});
     wire        s_big   = a_big ? sa : sb;
@@ -78,12 +78,12 @@ module dm16_bf16 (
     wire [17:0] sig_sml = {2'b01, f_sml, 9'd0} >> e_diff[3:0];  // only used when e_diff < 10
 
     // multiply (DSP)
-    wire [15:0] prod  = {1'b1, fa} * {1'b1, fb};                // value prod * 2^-14
-    wire [10:0] e_mul = {3'd0, ea} + {3'd0, eb} - 11'd127;
+    wire [15:0] prod    = {1'b1, fa} * {1'b1, fb};                // value prod * 2^-14
+    wire [10:0] e_mul   = {3'd0, ea} + {3'd0, eb} - 11'd127;
 
     // int16 -> bf16 (operand a holds the integer)
-    wire        i_neg = s0_a[15];
-    wire [15:0] i_mag = i_neg ? (~s0_a + 16'd1) : s0_a;         // 0x8000 stays 32768
+    wire        i_neg   = s0_a[15];
+    wire [15:0] i_mag   = i_neg ? (~s0_a + 16'd1) : s0_a;         // 0x8000 stays 32768
 
     reg         n_byp;
     reg  [15:0] n_byp_val;
@@ -102,15 +102,31 @@ module dm16_bf16 (
         n_sub     = 1'b0;
         case (s0_op)
             2'd0, 2'd1: begin
-                if (a_nan || b_nan)            begin n_byp = 1; n_byp_val = QNAN; end
-                else if (a_inf && b_inf)       begin n_byp = 1; n_byp_val = (sa != sb) ? QNAN : {sa, 15'h7F80}; end
-                else if (a_inf)                begin n_byp = 1; n_byp_val = {sa, 15'h7F80}; end
-                else if (b_inf)                begin n_byp = 1; n_byp_val = {sb, 15'h7F80}; end
-                else if (a_zero && b_zero)     begin n_byp = 1; n_byp_val = {sa & sb, 15'd0}; end
-                else if (a_zero)               begin n_byp = 1; n_byp_val = {sb, s0_b[14:0]}; end
-                else if (b_zero)               begin n_byp = 1; n_byp_val = s0_a; end
-                else if (e_diff >= 8'd10)      begin n_byp = 1; n_byp_val = {s_big, e_big, f_big}; end
-                else begin
+                if (a_nan || b_nan) begin
+                    n_byp     = 1;
+                    n_byp_val = QNAN;
+                end else if (a_inf && b_inf) begin
+                    n_byp     = 1;
+                    n_byp_val = (sa != sb) ? QNAN : {sa, 15'h7F80};
+                end else if (a_inf) begin
+                    n_byp     = 1;
+                    n_byp_val = {sa, 15'h7F80};
+                end else if (b_inf) begin
+                    n_byp     = 1;
+                    n_byp_val = {sb, 15'h7F80};
+                end else if (a_zero && b_zero) begin
+                    n_byp     = 1;
+                    n_byp_val = {sa & sb, 15'd0};
+                end else if (a_zero) begin
+                    n_byp     = 1;
+                    n_byp_val = {sb, s0_b[14:0]};
+                end else if (b_zero) begin
+                    n_byp     = 1;
+                    n_byp_val = s0_a;
+                end else if (e_diff >= 8'd10) begin
+                    n_byp     = 1;
+                    n_byp_val = {s_big, e_big, f_big};
+                end else begin
                     n_sign = s_big;
                     n_e    = {3'd0, e_big};
                     n_big  = sig_big;
@@ -119,11 +135,19 @@ module dm16_bf16 (
                 end
             end
             2'd2: begin
-                if (a_nan || b_nan)                              begin n_byp = 1; n_byp_val = QNAN; end
-                else if ((a_inf && b_zero) || (b_inf && a_zero)) begin n_byp = 1; n_byp_val = QNAN; end
-                else if (a_inf || b_inf)                         begin n_byp = 1; n_byp_val = {sa ^ s0_b[15], 15'h7F80}; end
-                else if (a_zero || b_zero)                       begin n_byp = 1; n_byp_val = {sa ^ s0_b[15], 15'd0}; end
-                else begin
+                if (a_nan || b_nan) begin 
+                    n_byp     = 1;
+                    n_byp_val = QNAN;
+                end else if ((a_inf && b_zero) || (b_inf && a_zero)) begin 
+                    n_byp     = 1;
+                    n_byp_val = QNAN;
+                end else if (a_inf || b_inf) begin
+                    n_byp     = 1;
+                    n_byp_val = {sa ^ s0_b[15], 15'h7F80};
+                end else if (a_zero || b_zero) begin
+                    n_byp     = 1;
+                    n_byp_val = {sa ^ s0_b[15], 15'd0};
+                end else begin
                     n_sign = sa ^ s0_b[15];
                     n_e    = e_mul;
                     n_big  = {prod, 2'b00};
@@ -176,10 +200,12 @@ module dm16_bf16 (
     integer i;
     always @(*) begin
         lz = 5'd0;
-        for (i = 0; i <= 17; i = i + 1)
+        for (i = 0; i <= 17; i = i + 1) begin
             if (sig[i]) lz = 5'd17 - i[4:0];   // highest set bit wins (last assignment)
+    
+        end
     end
-
+    
     wire [17:0] norm   = sig << lz;
     wire [10:0] e_norm = sA_e + 11'd1 - {6'd0, lz};
     wire [7:0]  mant   = norm[17:10];
@@ -191,16 +217,17 @@ module dm16_bf16 (
     wire [6:0]  f_fin  = m_rnd[8] ? m_rnd[7:1] : m_rnd[6:0];
 
     always @(*) begin
-        if (sA_byp)
+        if (sA_byp) begin
             result = sA_byp_val;
-        else if (sig == 18'd0)
+        end else if (sig == 18'd0) begin
             result = 16'd0;                                // exact cancellation: x - x = +0
-        else if (!e_fin[10] && (e_fin >= 11'd255))
+        end else if (!e_fin[10] && (e_fin >= 11'd255)) begin
             result = {sA_sign, 8'hFF, 7'd0};               // overflow -> inf
-        else if (e_fin[10] || (e_fin == 11'd0))
+        end else if (e_fin[10] || (e_fin == 11'd0)) begin
             result = {sA_sign, 15'd0};                     // underflow -> FTZ
-        else
+        end else begin
             result = {sA_sign, e_fin[7:0], f_fin};
+        end
     end
 
 endmodule

@@ -61,7 +61,7 @@
 // sequencer guarantees it): MUL/MULH results and ALU Z/N flags are written
 // in that clock, and operands for the next instruction are read in it.
 module dm16_pe #(
-    parameter [5:0]   PE_ID  = 6'd0,
+    parameter [5:0]   PE_ID   = 6'd0,
     parameter         HAS_RF  = 1'b1,    // registers r1..r[NREGS-1]
     parameter integer W       = 16,      // data width: a power of two, >= 16
     parameter integer NREGS   = 8,       // r0 (= b) .. r[NREGS-1]: a power of two, 2..1024

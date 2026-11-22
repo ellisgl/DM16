@@ -5,17 +5,17 @@
 //   PE_ID = {cluster[DIMS-1:0], lane}
 //   NEWS torus: ROWS x COLS, row = PE_ID / COLS, col = PE_ID % COLS
 module dm16_core #(
-    parameter integer DIMS   = 2,          // hypercube dimensions (clusters = 2^DIMS)
-    parameter integer LANES  = 2,          // PEs per cluster (2 or 4)
-    parameter integer COLS   = 4,          // NEWS torus width
-    parameter integer CLK_HZ = 54_000_000, // for the UART baud divider
-    parameter integer BAUD   = 115_200,    // UART rate after reset (the host may change it)
-    parameter integer W      = 16,         // PE data width: 16, 32, 64, ... (a power of two)
-    parameter integer GOWIN_SP = 1,         // Gowin BSRAM primitives (0: inferred RAM)
-    parameter integer NREGS  = 8,           // PE registers r0..r[NREGS-1]: a power of two, 2..1024
-    parameter         RF_BRAM = 1'b0,       // registers in block RAM (1) or flip-flops (0)
-    parameter integer MEM_AW = 10,          // PE memory = 2^MEM_AW words (<= W; <= 13 with GOWIN_SP)
-    parameter         HAS_FPU = 1'b1        // bf16 FPU lanes (0: FPU instructions are no-ops)
+    parameter integer DIMS     = 2,          // hypercube dimensions (clusters = 2^DIMS)
+    parameter integer LANES    = 2,          // PEs per cluster (2 or 4)
+    parameter integer COLS     = 4,          // NEWS torus width
+    parameter integer CLK_HZ   = 54_000_000, // for the UART baud divider
+    parameter integer BAUD     = 115_200,    // UART rate after reset (the host may change it)
+    parameter integer W        = 16,         // PE data width: 16, 32, 64, ... (a power of two)
+    parameter integer GOWIN_SP = 1,          // Gowin BSRAM primitives (0: inferred RAM)
+    parameter integer NREGS    = 8,          // PE registers r0..r[NREGS-1]: a power of two, 2..1024
+    parameter         RF_BRAM  = 1'b0,       // registers in block RAM (1) or flip-flops (0)
+    parameter integer MEM_AW   = 10,         // PE memory = 2^MEM_AW words (<= W; <= 13 with GOWIN_SP)
+    parameter         HAS_FPU  = 1'b1        // bf16 FPU lanes (0: FPU instructions are no-ops)
 )(
     input  wire       clk,
     input  wire       rst_n,
@@ -76,8 +76,9 @@ module dm16_core #(
             cluster_any <= {NODES{1'b0}};
             any_active  <= 1'b0;
         end else begin
-            for (c = 0; c < NODES; c = c + 1)
+            for (c = 0; c < NODES; c = c + 1) begin
                 cluster_any[c] <= |all_ctx[c*LANES +: LANES];
+            end
             any_active <= |cluster_any;
         end
     end

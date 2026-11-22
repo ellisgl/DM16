@@ -16,7 +16,8 @@ module dm16_top_nano20k (
     wire clk;
     BUFG u_clk_bufg (.I(clk_27m), .O(clk));
 
-    wire       running, all_active;
+    wire       running;
+    wire       all_active;
     wire [3:0] quarter_active;
 
     dm16_core #(
