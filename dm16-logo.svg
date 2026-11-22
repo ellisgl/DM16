@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="30 15 834.4 210.4"
+   width="1043"
+   height="263"
+   version="1.1"
+   id="svg2"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs2" />
+  <path
+     fill="#0b1033"
+     d="m 134,15.2 51.96,30 v 60 l 51.96,30 v 60 l -51.96,30 -51.96,-30 -51.96,30 -51.96,-30 v -60 l 51.96,-30 v -60 z"
+     id="path1" />
+  <path
+     fill="#ff6a00"
+     stroke="#000000"
+     stroke-width="6"
+     stroke-linejoin="miter"
+     d="m 116.68,65.2 17.32,-10 17.32,10 v 60 l 51.96,30 v 20 l -17.32,10 -51.96,-30 -51.96,30 -17.32,-10 v -20 l 51.96,-30 z"
+     id="path2"
+     style="stroke-linecap:butt;stroke-linejoin:miter" />
+  <text
+     xml:space="preserve"
+     style="font-size:266.667px;font-family:Psycosis;-inkscape-font-specification:Psycosis;writing-mode:lr-tb;direction:ltr;fill:#00ff00;stroke-width:48.3779;stroke-linecap:butt;stroke-linejoin:miter"
+     x="238.58568"
+     y="213.53355"
+     id="text5"><tspan
+       id="tspan5"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:266.667px;font-family:'DM Mono';-inkscape-font-specification:'DM Mono';stroke-width:48.378"
+       x="238.58568"
+       y="213.53355">DM16</tspan></text>
+</svg>

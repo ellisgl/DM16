@@ -1,4 +1,5 @@
 # DM16 (Dinky Machine 16)
+![DM16](dm16-logo.png)
 
 DM16 is a small massively parallel computer in the style of the Thinking
 Machines **Connection Machine**, built in an FPGA. A single sequencer
