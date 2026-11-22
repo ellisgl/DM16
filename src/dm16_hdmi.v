@@ -1,6 +1,7 @@
 `timescale 1ns/1ns
-// DM16 HDMI (DVI) output: a 320x240 frame buffer shown at 640x480, 60 Hz,
-// each frame-buffer pixel as a 2x2 block.
+// DM16 HDMI (DVI) output: a frame buffer shown at 640x480, 60 Hz, each
+// frame-buffer pixel as a SCALE x SCALE block: 320x240 (SCALE 2) or
+// 160x120 (SCALE 4, the Nano 9K).
 //   PIX_BITS = 8: one byte per pixel, RGB332 (rrrgggbb)        - 38 BSRAMs
 //   PIX_BITS = 4: 16 colours, the CGA palette (index = low 4 bits) - 19 BSRAMs
 //
@@ -14,7 +15,8 @@ module dm16_hdmi #(
     parameter integer FB_W  = 320,
     parameter integer FB_H  = 240,
     parameter integer FB_AW = 17,
-    parameter integer PIX_BITS = 8
+    parameter integer PIX_BITS = 8,
+    parameter integer SCALE = 2         // 640 / FB_W: 2 or 4
 )(
     // Frame-buffer write port (system clock)
     input  wire             clk,
@@ -73,8 +75,8 @@ module dm16_hdmi #(
     end
 
     // Stage 1: frame-buffer address and the video signals for this clock
-    wire [8:0] fx = hc[9:1];
-    wire [8:0] fy = vc[9:1];
+    wire [8:0] fx = (SCALE == 4) ? {1'b0, hc[9:2]} : hc[9:1];
+    wire [8:0] fy = (SCALE == 4) ? {1'b0, vc[9:2]} : vc[9:1];
     reg  [FB_AW-1:0] ra;
     reg  [2:0] ctl1, ctl2;                    // {de, vsync, hsync}
     always @(posedge clk_pixel) begin

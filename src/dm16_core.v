@@ -69,7 +69,8 @@ module dm16_core #(
         .HAS_FPU       (HAS_FPU),
         .RF_BRAM       (RF_BRAM),
         .HAS_HDMI      (HAS_HDMI),
-        .FB_BITS       (FB_BITS)
+        .FB_BITS       (FB_BITS),
+        .FB_W          (FB_W)
     ) u_seq (
         .clk           (clk),
         .rst_n         (rst_n),

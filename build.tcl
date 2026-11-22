@@ -23,7 +23,7 @@ switch $board {
     }
     nano9k {
         set_device GW1NR-LV9QN88PC6/I5 -device_version C
-        set files {boards/dm16_top_nano9k.v boards/tang_nano_9k.cst boards/dm16_27m.sdc}
+        set files {boards/dm16_top_nano9k.v dm16_hdmi.v boards/tang_nano_9k.cst boards/dm16_27m.sdc}
         set top dm16_top_nano9k
     }
     default {

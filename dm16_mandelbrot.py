@@ -44,7 +44,7 @@ from dm16_host import (
     ALU_ADD, ALU_SUB, ALU_AND, ALU_OR, ALU_XOR, ALU_MOV, ALU_MUL, ALU_MULH, ALU_SHRN, ALU_ASRN,
     SRC_R, SRC_IMM, SRC_ID, SRC_MEM, CTX_ALWAYS, CTX_IF_N, CTX_INVERT,
     OP_LDI, OP_MAR, OP_STX, OP_LDX, MEM_INC,
-    LOOP, ENDL, BANY, LABEL, FBX, FBY, FBW, FB_W, FB_H, rgb332,
+    LOOP, ENDL, BANY, LABEL, FBX, FBY, FBW, rgb332,
     alu, ctx, ldm, stm, put, get, encode_instr, ldi16,
     read_mem_block, upload_and_run,
 )
@@ -291,12 +291,14 @@ def palette_program(ncol=256):
 
 def expected_screen(view, max_iter, ncol=256):
     """The frame buffer an --hdmi run should leave."""
+    from dm16_hdmi import FB_W, FB_H
     counts = model_image(view, FB_W, FB_H, max_iter)
     pal = np.array(palette(ncol))
     return np.where(counts >= max_iter, 0, pal[counts & 63])
 
 
 def compute_hdmi(ser, view, max_iter, with_palette=True, ncol=256):
+    from dm16_hdmi import FB_W, FB_H
     bw, bh = FB_W // BLOCK, FB_H // ROWS_PER_BLOCK
     prog = (palette_program(ncol) if with_palette else []) + setup_program(view) + \
         build_program(bw, bh, max_iter, hdmi=True)
@@ -418,28 +420,29 @@ def main_hdmi(args):
         device = dm16_hdmi.find_capture_device()
         if not device:
             raise SystemExit("no capture device found")
-    widths, width = [], args.width
-    while make_view(cx, cy, width, FB_W, FB_H, 1.0) and width / FB_W * ONE >= 2:
-        widths.append(width)
-        if not args.zoom:
-            break
-        width *= args.zoom_factor
-    if not widths:
-        raise SystemExit("view out of Q4.12 range or too small to resolve")
-    sequence = widths + (widths[-2:0:-1] if args.loop else [])
     bad = frames = 0
-    t_start = time.monotonic()
     with open_dm16(args.port) as ser:
-        ncol = dm16_hdmi.screen_colors(dm16_hdmi.read_config(ser))
+        ncol = dm16_hdmi.configure(dm16_hdmi.read_config(ser))
         if not ncol:
             raise SystemExit("this bitstream has no HDMI output")
+        fw, fh = dm16_hdmi.FB_W, dm16_hdmi.FB_H
+        widths, width = [], args.width
+        while make_view(cx, cy, width, fw, fh, 1.0) and width / fw * ONE >= 2:
+            widths.append(width)
+            if not args.zoom:
+                break
+            width *= args.zoom_factor
+        if not widths:
+            raise SystemExit("view out of Q4.12 range or too small to resolve")
+        sequence = widths + (widths[-2:0:-1] if args.loop else [])
+        t_start = time.monotonic()
         first = True
         try:
             while True:
                 for width in sequence:
                     depth = math.log2(args.width / width)
                     max_iter = min(511, round(args.max_iter * (1 + depth / 3)))
-                    view = make_view(cx, cy, width, FB_W, FB_H, 1.0)
+                    view = make_view(cx, cy, width, fw, fh, 1.0)
                     elapsed, n = compute_hdmi(ser, view, max_iter, with_palette=first, ncol=ncol)
                     first = False
                     frames += 1

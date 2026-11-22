@@ -21,3 +21,13 @@ IO_PORT "led_n[2]" IO_TYPE=LVCMOS18;
 IO_PORT "led_n[3]" IO_TYPE=LVCMOS18;
 IO_PORT "led_n[4]" IO_TYPE=LVCMOS18;
 IO_PORT "led_n[5]" IO_TYPE=LVCMOS18;
+
+// HDMI (DVI) output, differential (ELVDS_OBUF); as in Sipeed's 9K examples
+IO_LOC "tmds_clk_p" 69,68;
+IO_PORT "tmds_clk_p" PULL_MODE=NONE DRIVE=8;
+IO_LOC "tmds_d_p[0]" 71,70;
+IO_PORT "tmds_d_p[0]" PULL_MODE=NONE DRIVE=8;
+IO_LOC "tmds_d_p[1]" 73,72;
+IO_PORT "tmds_d_p[1]" PULL_MODE=NONE DRIVE=8;
+IO_LOC "tmds_d_p[2]" 75,74;
+IO_PORT "tmds_d_p[2]" PULL_MODE=NONE DRIVE=8;

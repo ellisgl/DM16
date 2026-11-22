@@ -5,8 +5,11 @@
 //   iverilog -s tb -o sim/hdmi.vvp sim/tb_hdmi.v src/dm16_hdmi.v \
 //            ~/Gowin_V1.9.12.04_linux/IDE/simlib/gw5a/prim_sim.v && vvp sim/hdmi.vvp
 // 16-colour mode (Nano 20K): add -Ptb.PB=4
+// Nano 9K (160x120, 16 colours): -Ptb.PB=4 -Ptb.FW=160 -Ptb.FH=120
 module tb;
     parameter PB = 8;
+    parameter FW = 320, FH = 240;
+    localparam SC = 640 / FW;
     GSR GSR(.GSRI(1'b1));
     reg clk = 0, clk_pixel = 0, clk_x5 = 0, rst = 1;
     always #10 clk = ~clk;
@@ -18,7 +21,7 @@ module tb;
     reg  [7:0]  wd = 0;
     wire        ckp, ckn;
     wire [2:0]  dp, dn;
-    dm16_hdmi #(.PIX_BITS(PB)) dut (.clk(clk), .fb_we(we), .fb_waddr(wa), .fb_wdata(wd),
+    dm16_hdmi #(.PIX_BITS(PB), .FB_W(FW), .FB_H(FH), .SCALE(SC)) dut (.clk(clk), .fb_we(we), .fb_waddr(wa), .fb_wdata(wd),
                    .clk_pixel(clk_pixel), .clk_x5(clk_x5), .video_rst(rst),
                    .tmds_clk_p(ckp), .tmds_clk_n(ckn), .tmds_d_p(dp), .tmds_d_n(dn));
 
@@ -73,9 +76,9 @@ module tb;
     initial begin
         // fill the frame buffer through the write port
         repeat (4) @(posedge clk);
-        for (y = 0; y < 240; y = y + 1)
-            for (x = 0; x < 320; x = x + 1) begin
-                @(negedge clk); we = 1; wa = y * 320 + x; wd = pat(x, y);
+        for (y = 0; y < FH; y = y + 1)
+            for (x = 0; x < FW; x = x + 1) begin
+                @(negedge clk); we = 1; wa = y * FW + x; wd = pat(x, y);
             end
         @(negedge clk); we = 0;
         repeat (4) @(posedge clk);
@@ -108,7 +111,7 @@ module tb;
             if (d0[9] == 0) begin
                 // data symbol: a pixel
                 if (d1[9] || d2[9]) begin errors = errors + 1; $display("channel mismatch"); end
-                exp_px = pat(col >> 1, y >> 1);
+                exp_px = pat(col / SC, y / SC);
                 if ({d2[7:0], d1[7:0], d0[7:0]} !== rgb(exp_px)) begin
                     if (errors < 10)
                         $display("pixel (%0d,%0d): got %06x want %06x", col, y,

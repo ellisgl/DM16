@@ -263,7 +263,7 @@ HALT = _seq(SEQ_HALT)
 
 
 # Frame buffer (HDMI builds, 320x240 RGB332: rrrgggbb; no-ops without HDMI)
-FB_W, FB_H = 320, 240
+FB_W, FB_H = 320, 240          # 160 x 120 on the Nano 9K (read_config's fb_size)
 
 
 def FBX(x):
@@ -422,6 +422,7 @@ def read_config(ser):
     return dict(w=b[2], dims=b[3], lanes=b[4], cols=b[5], nregs=1 << b[6],
                 mem_words=1 << b[7], has_fpu=bool(b[8] & 1), rf_bram=bool(b[8] & 2),
                 has_hdmi=bool(b[8] & 4), fb_colors=16 if b[8] & 8 else 256,
+                fb_size=(160, 120) if b[8] & 16 else (320, 240),
                 clk_hz=int.from_bytes(b[9:12], "little") * 1000)
 
 
