@@ -297,7 +297,10 @@ execute.
 column `i % 8`, and the edges wrap round. `NEWS N` (or E, W, S) copies the
 neighbour's `acc` into this PE's `acc`, on every PE at once, in one
 instruction. It suits image filters, cellular automata and stencils;
-`dm16_life.py` runs Conway's Game of Life with one cell per PE.
+`dm16_life.py` runs Conway's Game of Life with one cell per PE, and with
+`--hdmi` a 160 × 120 universe with 300 cells per PE, 340 generations a
+second (see
+[HDMI output](#hdmi-output)).
 
 ```
         col 0   1   2   3   4   5   6   7
@@ -452,16 +455,41 @@ Programs draw with three sequencer instructions:
 |---|---|
 | `FBX x` | set the drawing position's x (0–319) |
 | `FBY y` | set its y (0–239) |
-| `FBW 0` | **tile**: every PE's `acc[7:0]` becomes one pixel, PE `p` at (x + `p` % `COLS`, y + `p` / `COLS`): an 8 × 8 tile on the Console, 4 × 2 on the 20K. Then x moves one tile right, wrapping to the next row of tiles at the right edge |
+| `FBW 0` | **tile**: every PE's `acc[7:0]` becomes one pixel, PE `p` at (x + `p` % `COLS`, y + `p` / `COLS`): an 8 × 8 tile on the Console, 4 × 2 on the Nanos. Then x moves one tile right, wrapping to the next row of tiles at the right edge |
+| `FBW 0, zoom z` | **zoomed tile** (z = 2, 4 or 8): the same, with each PE's pixel drawn as a z × z block, so the tile is z times bigger |
 | `FBW s` | **row** (s = 1–15): PE `p` goes to (x + `p` × s, y). Then x moves 1 right, wrapping to x = 0, y + 1 after s writes, so on the Console `FBW 5` five times fills a 320-pixel line (the 20K's 8 PEs cover at most 120 pixels this way) |
 
 `FBW` takes every PE's value whether it is active or not, waits 8 clocks for
 the accumulators to settle, then copies one byte per PE into the frame buffer
 while the program carries on (the next `FBW` waits if the copy, one clock per
-PE, is not finished). Pixels off the screen are dropped. So the whole
+pixel, is not finished). Pixels off the screen are dropped. So the whole
 320 × 240 screen is 1,200 tile writes on the Console (9,600 on the 20K;
 2,400 for the 9K's 160 × 120): drawing costs almost nothing next to
 computing the pixels.
+
+**Game of Life.** `dm16_life.py --hdmi` runs a much bigger Life than one
+cell per PE: the universe is cut into tiles the shape of the PE grid, and
+each PE holds its cell of every tile (the Connection Machine's "virtual
+processors"). A cell's neighbours come over the NEWS grid. At a tile's edge,
+the neighbouring PE supplies the cell from the next tile over instead, by
+loading a different word. Each generation is then drawn with one zoomed
+`FBW` per tile.
+
+| | Universe | Cells per PE | Shown as | One generation |
+|---|---|---|---|---|
+| Console | 160 × 120 | 300 | 2 × 2 pixels | 2.9 ms |
+| Nano 20K | 80 × 60 | 600 | 4 × 4 | ~9 ms |
+| Nano 9K | 80 × 60 | 600 | 2 × 2 (on its 160 × 120 screen) | ~6 ms |
+
+(Including drawing: the 20K's 4 × 4 cells take about 3 ms of its time to
+draw. Run with `--per-run 200` to measure; with one generation per run, the
+USB bridge's ~6 ms per request dominates.)
+
+It starts from a random field made on the board, shows 15 generations a
+second (`--fps 0` for flat out), and `--check` / `--capture` compare the
+universe and the screen with a NumPy Life. The universe wraps round like a
+torus with a one-row twist (off the right edge is back on the left, one row
+down), which falls out of numbering the tiles row by row.
 
 ```python
 from dm16_host import *
@@ -516,7 +544,7 @@ iverilog -s tb -o sim/fbw.vvp sim/tb_fbw.v src/dm16_fb_writer.v && vvp sim/fbw.v
 | PEs | 64 (16 clusters × 4) | 8 (4 clusters × 2) | 8 (4 clusters × 2) |
 | Hypercube / NEWS torus | 4-D / 8 × 8 | 2-D / 4 × 2 | 2-D / 4 × 2 |
 | bf16 FPU | yes | yes | **no**: FPU instructions are no-ops |
-| Clock (Fmax) | 50 MHz (58.3) | 27 MHz (54.2) | 27 MHz (48.9) |
+| Clock (Fmax) | 50 MHz (62.7) | 27 MHz (55.3) | 27 MHz (42.9) |
 | Logic used | 73% | 61% | 83% |
 | Host link | 2 Mbaud | 1 Mbaud | 1 Mbaud, from reset |
 | HDMI output | 320 × 240, 256 colours | 320 × 240, 16 colours | 160 × 120, 16 colours |
@@ -591,7 +619,7 @@ stable name, `/dev/tang_console_uart`. `DM16_BAUD` picks another rate (up to
 | `dm16_regfile_test.py` | registers, register operands, masked writes, bf16 dot product |
 | `dm16_prefix_sum.py` | parallel prefix sum across the hypercube |
 | `dm16_stress.py` | repeated runs to catch rare glitches |
-| `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus |
+| `dm16_life.py` | Conway's Game of Life on the 8 × 8 torus, every generation checked against Python; `--hdmi` for a 160 × 120 universe on HDMI (80 × 60 on the Nanos), `--check` / `--capture` to compare it with a NumPy Life |
 | `dm16_raycast.py` | Wolfenstein-style ray caster, one ray per PE: W/S or arrows to move, A/D to turn; `--demo` for an autopilot tour, `--ascii` for text shading, `--check` to compare every column with a Python model |
 | `dm16_chat.py` | a 4-bit chat model that generates whole replies on the Tang Console (builds on [Z80-μLM](https://github.com/HarryR/z80ai)); `--check` compares every output value with the integer model, `--test-file` compares whole replies |
 | `dm16_chat_train.py` | trains that model with NumPy (quantization-aware); `--holdout` measures replies to unseen queries |
@@ -636,13 +664,13 @@ On the GW5AST-138:
 
 | Resource | Used |
 |---|---|
-| Logic (LUTs + ALUs) | 100,269 / 138,240 (73%) |
-| Logic slices (CLS) | 59,495 / 69,120 (87%) |
-| Flip-flops | 32,717 / 139,095 (24%) |
+| Logic (LUTs + ALUs) | 100,340 / 138,240 (73%) |
+| Logic slices (CLS) | 59,602 / 69,120 (87%) |
+| Flip-flops | 32,727 / 139,095 (24%) |
 | Block RAM | 110 / 340 (33%): 64 PE memories, program memory, 40 for the frame buffer |
 | DSP | 97 / 298 (33%) |
 | PLL | 2 / 12: system clock, HDMI clocks |
-| Fmax | 58.3 MHz, run at 50 MHz (the slowest path is inside the hypercube router) |
+| Fmax | 62.7 MHz in the latest build (58–63 MHz from build to build), run at 50 MHz; the slowest path is inside the hypercube router |
 
 ## Ideas for contributors
 
@@ -674,13 +702,13 @@ Some directions that would make good projects, with where to start:
   with ~6 ms per request, the main bottleneck for many programs. PCIe or
   Ethernet would change that.
 * **More speed.** The slowest path is now inside the hypercube router (Fmax
-  58.3 MHz on the Console, run at 50 MHz).
+  58–63 MHz on the Console, run at 50 MHz).
 * **The open Known issue below:** two rare wrong Mandelbrot results on the
   Console that haven't recurred.
 * **More demos:** image filters on the NEWS grid, bitonic sort or an FFT over
-  the hypercube, textures for the ray caster, or the ray caster and Game of
-  Life drawn on HDMI (`FBW` with a stride draws whole
-  screen lines; see [HDMI output](#hdmi-output)).
+  the hypercube, textures for the ray caster, or the ray caster drawn on HDMI
+  (`FBW` with a stride draws whole screen lines; see
+  [HDMI output](#hdmi-output)).
 * **A language.** Programs are written as Python lists of instructions. The
   Connection Machine had parallel languages, C* and \*Lisp; something in that
   spirit for DM16 would make it far easier to program.

@@ -26,6 +26,7 @@ import glob
 import os
 import subprocess
 import sys
+import time
 
 import numpy as np
 
@@ -210,6 +211,7 @@ def check_screen(device, expected_fb, png=None, tries=3, cal=None, ncol=256):
               f"mean colour error {err:.1f}/255")
         if frac == 1.0:
             return True
+        time.sleep(1.0)       # e.g. the card still locking on after a bitstream load
     return False
 
 

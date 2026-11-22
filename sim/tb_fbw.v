@@ -69,6 +69,38 @@ module tb;
                 if (errors < 5) $display("row (%0d,%0d) %h want %h", x, y, fb[y*320+x], row_px(x, y));
                 errors = errors + 1;
             end
+        // Zoomed tiles: FBW with zoom 2 (field 0x10): 20 x 15 tiles of 8 x 8
+        // cells, each cell a 2 x 2 block, cover the screen
+        do_op(0, 0); do_op(1, 0);
+        for (ty = 0; ty < 15; ty = ty + 1)
+            for (tx = 0; tx < 20; tx = tx + 1) begin
+                for (p = 0; p < NUM_PE; p = p + 1)
+                    acc[p*W +: W] = {8'h00, tile_px(tx*8 + p%8, ty*8 + p/8) ^ 8'h5A};
+                do_op(2, 16'h0010);
+            end
+        while (busy) @(negedge clk); repeat (3) @(negedge clk);
+        for (y = 0; y < 240; y = y + 1) for (x = 0; x < 320; x = x + 1)
+            if (fb[y*320+x] !== (tile_px(x/2, y/2) ^ 8'h5A)) begin
+                if (errors < 5) $display("zoom2 (%0d,%0d) %h want %h", x, y, fb[y*320+x], tile_px(x/2, y/2) ^ 8'h5A);
+                errors = errors + 1;
+            end
+        $display("zoom 2: errors %0d", errors);
+        // Zoom 8 (field 0x30): one tile is 64 x 64; at (288, 200) it clips to 32 x 40
+        writes = 0;
+        do_op(0, 288); do_op(1, 200); do_op(2, 16'h0030);
+        while (busy) @(negedge clk); repeat (3) @(negedge clk);
+        if (writes != 32*40) begin $display("zoom 8 clipped tile wrote %0d", writes); errors = errors + 1; end
+        // Zoom 4 (field 0x20): a tile is 32 x 32
+        do_op(0, 0); do_op(1, 0);
+        for (p = 0; p < NUM_PE; p = p + 1) acc[p*W +: W] = p * 3;
+        do_op(2, 16'h0020);
+        while (busy) @(negedge clk); repeat (3) @(negedge clk);
+        for (y = 0; y < 32; y = y + 1) for (x = 0; x < 32; x = x + 1)
+            if (fb[y*320+x] !== ((((y/4)*8 + x/4) * 3) & 255)) begin
+                if (errors < 5) $display("zoom4 (%0d,%0d) %h", x, y, fb[y*320+x]);
+                errors = errors + 1;
+            end
+
         // Clipping: a tile at x=316 writes only 4 columns; y=236 only 4 rows
         writes = 0;
         do_op(0, 316); do_op(1, 236); do_op(2, 0);
