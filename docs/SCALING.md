@@ -210,11 +210,15 @@ unchanged on a build with more.
 
 There are two ways to build them:
 
-* **Flip-flops** (`RF_BRAM = 0`, the default): an `NREGS`-way select in front
-  of operand B. On AMD and Intel parts, synthesis puts these in distributed
-  (LUT) RAM, so 32 registers cost the same as 8. On the Tang's Gowin chip,
-  which has no distributed RAM, each register is `W` flip-flops plus select
-  logic, so this suits small register files.
+* **Flip-flops** (`RF_BRAM = 0`, the default): an array with one write port
+  and an asynchronous read in front of operand B. On AMD and Intel parts,
+  synthesis puts it in distributed (LUT) RAM, so 32 registers cost the same
+  as 8. Gowin chips have distributed RAM too (shadow SRAM, 16 words × 4 bits
+  per cell): Gowin synthesis maps each PE's 8 × 16-bit file to four
+  RAM16SDP4 cells in the Nano 20K and Nano 9K builds, and the Tang Console's
+  GW5AST-138 has the same cells. Past 16 registers each extra 16 words costs
+  another set of cells plus a wider read mux, so this suits small register
+  files.
 * **Block RAM** (`RF_BRAM = 1`): `r1` and up live in one block RAM per PE
   (two or more for very wide `W`). This is cheap in logic for any size up to
   1,024. It works without extra clocks because the PE reads operand B one
